@@ -214,7 +214,9 @@ class RunStorage:
                 "output_tokens": run.usage.output_tokens,
                 "total_tokens": run.usage.total_tokens,
                 "thinking_tokens": run.usage.thinking_tokens,
-            } if run.usage else None,
+            }
+            if run.usage
+            else None,
         }
 
         # Replace existing version or append

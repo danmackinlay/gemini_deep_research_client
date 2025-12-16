@@ -153,7 +153,9 @@ def create_ui() -> gr.Blocks:
                 yield {
                     status_output: run.status.value,
                     run_id_output: run.run_id,
-                    report_output: run.report_markdown or accumulated_text or "No report generated",
+                    report_output: run.report_markdown
+                    or accumulated_text
+                    or "No report generated",
                 }
 
             except Exception as e:
@@ -215,7 +217,9 @@ def create_ui() -> gr.Blocks:
 
                 yield {
                     revised_status: run.status.value,
-                    revised_report_output: run.report_markdown or accumulated_text or "No report",
+                    revised_report_output: run.report_markdown
+                    or accumulated_text
+                    or "No report",
                 }
 
             except ValueError as e:

@@ -1,6 +1,8 @@
 """CLI interface for the Deep Research client."""
 
-from typing import Optional
+import json
+from pathlib import Path
+from typing import Any, Optional
 
 import typer
 from rich.console import Console
@@ -21,6 +23,7 @@ console = Console()
 
 # Global state for options
 _show_thoughts: bool = False
+_debug_chunks: bool = False
 
 
 @app.callback()
@@ -31,10 +34,16 @@ def main_callback(
         "-t",
         help="Show thinking summaries during streaming",
     ),
+    debug_chunks: bool = typer.Option(
+        False,
+        "--debug-chunks",
+        help="Log raw API chunks to debug_chunks.jsonl for citation debugging",
+    ),
 ) -> None:
     """Global options for deep-research commands."""
-    global _show_thoughts
+    global _show_thoughts, _debug_chunks
     _show_thoughts = thoughts
+    _debug_chunks = debug_chunks
 
 
 @app.command("new")
@@ -105,13 +114,29 @@ def new_research(
     def on_status(status: str) -> None:
         console.print(f"[dim]Status: {status}[/dim]")
 
+    # Debug callback: collect chunks in memory, write to file after we have run_id
+    debug_chunks: list[dict[str, Any]] = []
+
+    def on_debug(chunk_dict: dict[str, Any]) -> None:
+        debug_chunks.append(chunk_dict)
+
     try:
         run = workflow.run_initial_research(
             topic=topic,
             constraints=constraints,
             on_event=on_event,
             on_status=on_status,
+            on_debug=on_debug if _debug_chunks else None,
         )
+
+        # Write debug chunks to file if enabled
+        if _debug_chunks and debug_chunks:
+            debug_path = Path("runs") / run.run_id / "debug_chunks.jsonl"
+            debug_path.parent.mkdir(parents=True, exist_ok=True)
+            with debug_path.open("w", encoding="utf-8") as f:
+                for chunk in debug_chunks:
+                    f.write(json.dumps(chunk) + "\n")
+            console.print(f"[dim]Debug chunks saved to: {debug_path}[/dim]")
 
         if run.status == InteractionStatus.COMPLETED:
             console.print(
@@ -316,7 +341,9 @@ def list_runs() -> None:
     console.print("[bold]Research Runs:[/bold]\n")
     for meta in runs:
         topic_preview = meta.topic[:60] + "..." if len(meta.topic) > 60 else meta.topic
-        console.print(f"  [cyan]{meta.run_id}[/cyan] (v{meta.latest_version}) - {topic_preview}")
+        console.print(
+            f"  [cyan]{meta.run_id}[/cyan] (v{meta.latest_version}) - {topic_preview}"
+        )
 
         # Get usage from latest version
         latest_version = next(

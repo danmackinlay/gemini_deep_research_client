@@ -3,7 +3,11 @@
 from dataclasses import dataclass
 from typing import Optional, Callable
 
-from deep_research_app.deep_research import DeepResearchClient, StreamCallback
+from deep_research_app.deep_research import (
+    DeepResearchClient,
+    StreamCallback,
+    DebugCallback,
+)
 from deep_research_app.storage import RunStorage
 from deep_research_app.models import ResearchRun, InteractionStatus
 
@@ -74,6 +78,7 @@ class ResearchWorkflow:
         *,
         on_event: Optional[StreamCallback] = None,
         on_status: Optional[Callable[[str], None]] = None,
+        on_debug: Optional[DebugCallback] = None,
     ) -> ResearchRun:
         """
         Run initial research on a topic.
@@ -100,6 +105,7 @@ class ResearchWorkflow:
             prompt,
             stream=True,
             on_event=wrapped_callback,
+            on_debug=on_debug,
         )
 
         run.interaction_id = result.interaction_id
@@ -143,6 +149,7 @@ class ResearchWorkflow:
         *,
         on_event: Optional[StreamCallback] = None,
         on_status: Optional[Callable[[str], None]] = None,
+        on_debug: Optional[DebugCallback] = None,
     ) -> ResearchRun:
         """
         Create a revision of an existing research run.
@@ -178,6 +185,7 @@ class ResearchWorkflow:
             previous_interaction_id=previous_run.interaction_id,
             stream=True,
             on_event=wrapped_callback,
+            on_debug=on_debug,
         )
 
         run.interaction_id = result.interaction_id

@@ -1,232 +1,225 @@
-Goal and acceptance criteria
+## Background you need for correct design decisions
 
-You want a human-readable Markdown report where:
-	1.	Every citation is a clickable URL (inline links or footnotes).
-	2.	Citations are not hallucinated by the model; they come from structured provenance captured during the Deep Research run.
-	3.	The report is reproducible/auditable: you can show exactly which URLs were consulted.
+1. **Deep Research is an agent that returns a report, not a provenance graph.** The official Deep Research streaming example only handles `content.delta` of type `text` and `thought_summary` plus lifecycle events; it does **not** show any stream events for Google Search results, URL fetches, or per-span citation metadata. ([Google AI for Developers][1])
+   **Consequence:** expecting “annotations” / byte ranges / tool-call logs from the Deep Research stream is a category error for the current product surface.
 
-Your current output ([cite: 4], and a “sources” list with just names) fails all three.
+2. **Deep Research uses `google_search` and `url_context` internally by default, but that internal tool use is not surfaced to you as structured output.** ([Google AI for Developers][1])
+   **Consequence:** the only provenance you can reliably extract *from Deep Research* is whatever the model prints into the report text (e.g., a Sources list), unless you add a second step yourself.
 
-⸻
+3. **If you want real structured provenance, Google Search grounding (on standard models) is the API that actually exposes it.** It returns `groundingMetadata` with:
 
-Diagnosis of what’s actually wrong (in your implementation, not “the model”)
+   * `groundingChunks` (title + uri)
+   * `groundingSupports` mapping `(startIndex,endIndex)` text spans to chunk indices
+     and even provides the standard insertion pattern for inline clickable citations. ([Google AI for Developers][2])
+     **Consequence:** “high quality citation UX” is *with the grain* of **search grounding**, not Deep Research.
 
-You’re treating the Deep Research agent as if the only output is a Markdown string, and you’re asking the model to “do citations in prose”.
+4. **The `vertexaisearch.cloud.google.com/grounding-api-redirect/...` URLs are normal in Google’s grounding surfaces.** There isn’t a magic “give me the final URL without following redirects” field; people have explicitly asked for that and (at least in practice) you must follow the redirect to get the canonical target. ([GitHub][3])
 
-That is the wrong layer.
+Given those constraints, here is a plan that **actually works** today.
 
-The Interactions API already has a first-class citation/provenance mechanism:
-	•	Text blocks and streamed text deltas can include annotations: start/end byte ranges plus a source identifier.  ￼
-	•	The streamed event schema supports tool/result deltas like google_search_result and url_context_result, which explicitly carry URLs, titles, and fetch statuses.  ￼
+---
 
-Your code (as shown in deep_research_app/deep_research.py) only accumulates:
-	•	delta.text (plain text), and
-	•	a best-effort “thought summary” string,
+## Decision log (so you can stop thrashing)
 
-…and discards everything else. That guarantees you will not get URL provenance even if the API provided it.
+* **Decision A:** Keep Deep Research as the “research/writing” engine, but treat citations as **untrusted text** that must be normalized post-hoc.
+* **Decision B:** Standardize on a citation rendering that your Markdown renderers will actually display: **inline numeric Markdown links** like `[1](https://…)` (Gradio + most Markdown renderers handle this; footnotes are inconsistent).
+* **Decision C:** Store provenance as **data**, not just pretty text: generate a `sources.json` sidecar from the report, and rebuild the Markdown “Sources” section from that canonical data.
+* **Decision D (optional but recommended):** Resolve redirect URLs to final URLs via HTTP and store **both** (`redirect_url` and `final_url`).
 
-So the “[cite: N]” format you’re seeing is not “Deep Research provenance”; it’s the model improvising a citation convention because you forced the whole thing into a single Markdown channel.
+If you need **span-level, machine-verifiable provenance**, stop using Deep Research and switch to Google Search grounding (see “Plan 2” at the end). ([Google AI for Developers][2])
 
-⸻
+---
 
-30,000 ft design pattern: what you should be building
+## Plan 1: Keep Deep Research, but force and normalize linkable citations
 
-A research report is two artifacts, not one:
-	1.	Content: the narrative report (Markdown/HTML/Docx/etc).
-	2.	Provenance: a structured citation graph (spans → sources), plus a list of sources (URL/title/status).
+### 1) Fix the root cause: your prompt is underspecified
 
-Deep Research (via Interactions) is capable of giving you both, but not necessarily in the same text channel. Your job is to:
-	•	capture the structured provenance,
-	•	then render it into Markdown links deterministically.
+Your current template says: “use inline citations and a references section” but does not define:
 
-Do not ask the model to be your citation formatter.
+* the exact marker syntax,
+* that citations must be clickable links,
+* that the sources list must contain **URLs** (not “Britannica” as plain text).
 
-⸻
+So the model makes up `[cite: 4]` etc.
 
-The correct extraction and rendering pipeline (instructions)
+**Replace your “Evidence and Citations” instruction with a strict citation contract.** Example (drop-in block for `INITIAL_RESEARCH_TEMPLATE`):
 
-Step 1 — Stop relying on the model’s in-text citation syntax
+```text
+## Citation Contract (must follow exactly)
+- Every factual claim must end with one or more inline citation links in this exact format:
+  [1](URL), [2](URL)
+  (i.e., square brackets with the source number; the bracket itself must be the clickable link.)
+- Do NOT use “[cite: …]”, “(cite …)”, or any other citation syntax.
+- At the end include a section exactly titled: "## Sources"
+  Each entry must be numbered and must include a clickable Markdown link:
+  1. [Title](URL) — Publisher/Domain, publication date (if known), accessed YYYY-MM-DD
+- URLs must be explicit. Do not write just site names without URLs.
+- If the only URL you have is a vertexaisearch redirect URL, still include it as URL.
+```
 
-Treat any of these as presentation noise that you will remove:
-	•	[cite: 4], [cite: 1, 9]
-	•	a “Sources used” section written by the model
+Why this helps:
 
-Reason: these are not guaranteed to be URL-complete, stable, or accurate. The API has better data.
+* Your output becomes trivially parseable (and already in final desired display format).
+* Even if the model partially fails, you now have a well-defined “contract violation” you can detect automatically and trigger a formatting retry.
 
-Implementation rule: your renderer strips all model-invented citation tokens and replaces them with your own citations built from metadata.
+Deep Research explicitly supports steering output format through prompt instructions; this is exactly the intended lever. ([Google AI for Developers][1])
 
-⸻
+---
 
-Step 2 — Capture provenance from the Interactions API (you are currently dropping it)
+### 2) Add a deterministic “citation normalizer” step after the report is generated
 
-You need to capture at least one of the following (preferably both):
+You already persist `report_vN.md`. Insert a post-processing step before saving (or immediately after saving, but before displaying) that:
 
-2A) Final output annotations (most robust)
-When the interaction completes, retrieve the full interaction object and read:
-	•	The final TextContent.text
-	•	The final TextContent.annotations[]
-(byte ranges + source)  ￼
+**2.1 Extracts sources → canonical mapping**
 
-Even if you streamed during execution, still do a final interactions.get(id) at completion and build the report from that canonical final object.
+* Find the `## Sources` / `## References` / `Sources:` section.
+* Parse entries into:
 
-Why: streaming can be interrupted; annotations can be partial; final is canonical.
-
-2B) Tool/result deltas for URLs (best for “what was actually consulted”)
-In the event stream you should record (or later retrieve from stored outputs/events if present):
-	•	google_search_result deltas (contain url, title, etc.)  ￼
-	•	url_context_result deltas (contain fetched url and status: success/paywall/unsafe/error)  ￼
-
-This is the cleanest way to produce a defensible “sources consulted” list, including failure modes (paywalls, unsafe pages).
-
-Blunt critique: your current _process_chunk() ignores these delta types, so you are throwing away the only reliable place URLs may appear.
-
-⸻
-
-Step 3 — Build a structured internal citation model (don’t go straight to Markdown)
-
-Create an internal structure like:
-
+```json
 {
-  "text": "...final report text...",
-  "annotations": [
-    {"start": 123, "end": 220, "source": "https://..."},
-    {"start": 400, "end": 450, "source": "Britannica: Paris"}
-  ],
-  "sources": [
-    {"url": "https://...", "title": "...", "status": "success", "seen_in": ["google_search_result", "url_context_result"] }
-  ]
+  "1": {"title": "...", "url": "..."},
+  "2": {"title": "...", "url": "..."}
 }
+```
 
-Key rules:
-	•	Byte offsets: start_index / end_index are in bytes, not Unicode codepoints.  ￼
-Your insertion logic must operate on UTF‑8 bytes or carefully map bytes→string indices.
-	•	Normalize URLs: de-dup by a canonical URL (strip obvious trackers; keep stable params if needed).
-	•	Source identity: annotation.source “could be a URL, title, or other identifier”.  ￼
-So implement:
-	•	If it looks like a URL (http:// or https://), treat it as canonical.
-	•	Else, try to map it to a URL using your captured google_search_result titles and/or fetched url_context_result URLs.
-	•	If it can’t be mapped, keep it as “unresolved_source_label” and do not fabricate a URL.
+**2.2 Normalizes inline citations**
+Convert any of these into canonical `[n](url)` form:
 
-⸻
+* `[cite: 1, 9]` → `[1](url1), [9](url9)`
+* ` [1]` (non-link) → `[1](url1)`
+* ` (1)` if you see that → `[1](url1)` (optional)
 
-Step 4 — Decide your Markdown citation format (then enforce it)
+**2.3 Rebuilds the “## Sources” section from the mapping**
+Even if the model’s list is messy, you rewrite it into your house style.
 
-Pick one and enforce it in code:
+**2.4 Integrity checks (fail closed)**
 
-Option A: Markdown footnotes (best for readability)
-In text: ... Paris has ~2.1M residents.[^12]
+* Every citation number referenced in the body must exist in the source map.
+* Every source number in the map should be used at least once (optional warning).
+* Every source must have a URL. If not: mark report as invalid.
 
-Footnotes section:
+If invalid, automatically run a *formatting revision* using `previous_interaction_id` (see step 4).
 
-[^12]: Britannica — Paris. https://www.britannica.com/place/Paris (accessed 2025-12-16)
+This turns citation quality into engineering, not vibes.
 
-Pros: clean prose, clickable link in footnote, supports multiple citations.
+---
 
-Option B: Inline numeric links (best for “immediately clickable”)
-In text: ... Paris has ~2.1M residents. [[12]](https://...)
+### 3) Resolve redirect URLs (optional, but this is how you get “nice” URLs)
 
-Pros: directly clickable.
+When a source URL matches:
 
-Do not keep the model’s [cite: N] format. It’s nonstandard and not automatically linkable.
+`https://vertexaisearch.cloud.google.com/grounding-api-redirect/...`
 
-⸻
+Do:
 
-Step 5 — Render citations from annotations deterministically
+* HTTP `HEAD` (or `GET` if HEAD is blocked), `allow_redirects=True`
+* record `final_url = response.url`
 
-Algorithm sketch:
-	1.	Start from canonical final_text (from the final interaction).
-	2.	Sort annotations by end_index descending (byte offsets).
-	3.	For each annotation span:
-	•	assign a citation number for its source (dedupe sources),
-	•	insert [^n] (or [[n]](url)) at end_index.
-	4.	Append the “Sources” section generated from your deduped source list.
+Store:
 
-Important details:
-	•	Because indices are in bytes, insertion must be done in byte space or via a byte→char index map.  ￼
-	•	Descending insertion avoids shifting earlier indices.
+```json
+{
+  "id": 1,
+  "redirect_url": "...grounding-api-redirect/...",
+  "final_url": "https://www.britannica.com/place/Paris",
+  "title": "Paris | Britannica"
+}
+```
 
-⸻
+Then in the Markdown:
 
-Step 6 — Generate the bibliography from captured URLs, not from model prose
+* Use `final_url` for the clickable link (human-friendly),
+* optionally include the redirect URL in a hidden comment or in `sources.json` for audit.
 
-Your “Sources” section should be built from:
-	•	URLs in google_search_result (with titles)  ￼
-	•	URLs in url_context_result (with fetch status)  ￼
-	•	URLs directly appearing in annotation.source (if the API gives them)
+This “follow the redirect” requirement is not you being dumb; it’s the current state of Google grounding outputs (people have asked for a non-fetch way and effectively don’t get one). ([GitHub][3])
 
-And should include:
-	•	Title (if known)
-	•	URL
-	•	Retrieval status (success/paywall/unsafe/error)
-	•	Accessed date (use interaction completion timestamp)
+---
 
-This produces auditable provenance independent of the model’s narrative.
+### 4) Add an automatic “formatting retry” when the contract is violated
 
-⸻
+Deep Research supports follow-ups via `previous_interaction_id`. ([Google AI for Developers][1])
+Use that to fix formatting without rerunning the whole research.
 
-Step 7 — Add “citation coverage” quality gates (so you can fail fast)
+**Trigger conditions (examples):**
 
-If you care about provenance, enforce it:
-	•	Gate 1: ≥ X% of sentences contain at least one citation marker after rendering.
-	•	Gate 2: every citation marker resolves to a URL (unless explicitly flagged unresolved).
-	•	Gate 3: no “unresolved” sources for numeric claims (optional but strongly recommended).
+* sources section missing,
+* fewer than X sources,
+* any citation references an undefined source number,
+* any source missing URL,
+* presence of `[cite:`.
 
-If the gates fail, run a revision pass (see Step 9).
+**Retry prompt (run with a *standard model*, not Deep Research, to save time):**
 
-⸻
+```text
+Rewrite the previous report to comply with the Citation Contract below.
+Do not change factual content unless required to attach correct citations.
 
-Step 8 — Prompt changes (useful, but not the core fix)
+Citation Contract:
+- Use inline citations exactly like: [1](URL), [2](URL)
+- Provide ## Sources with numbered [Title](URL) entries.
+- No “[cite: …]”.
+Return only Markdown.
+```
 
-Prompting is secondary to extraction, but you should still add guardrails:
-	•	“Do not include a bibliography section; citations will be handled separately.”
-	•	“Avoid invented citation markers like [cite: N].”
-	•	“Prefer primary/official sources; avoid low-quality blogs for quantitative claims.”
+Because Deep Research outputs are stored and you can reference them via interaction history, this is the cheap fix pass. ([Google AI for Developers][1])
 
-This reduces cleanup and improves source quality, but it does not replace Step 2–6.
+---
 
-⸻
+### 5) Stop pretending “Evidence and Citations” is a separate appendix
 
-Step 9 — Optional: use a second pass to reformat (because Deep Research can’t do structured outputs)
+If you want provenance, citations must live at the claim sites.
 
-The Deep Research agent has a documented limitation: it doesn’t support structured outputs.  ￼
+Update your template to make “Evidence” a *style requirement across sections*:
 
-So if you want a model-assisted formatting pass, do it like this:
-	1.	Run Deep Research (agent) → extract final_text + annotations + sources.
-	2.	Run a follow-up interaction with a standard model (e.g. gemini-3-pro-preview) using previous_interaction_id, and provide your source map and formatting spec.  ￼
-	3.	Tell the model: “You may only cite from this provided list of URLs; do not invent new sources.”
+* “Main Findings: every bullet must end with citations”
+* “Tables: add a Sources column with `[n](url)` links”
 
-This is a safe use of the model: it’s formatting and placing citations, not inventing provenance.
+Otherwise you’ll keep getting a garbage “bibliography” that’s disconnected from claims.
 
-⸻
+---
 
-Decision log (why these choices are the “with the grain” approach)
-	1.	Use API annotations for citations, not model-generated tokens
-Because the Interactions schema explicitly supports citation annotations with byte ranges.  ￼
-	2.	Capture tool result deltas to get real URLs and statuses
-Because google_search_result and url_context_result deltas are where URLs live, and they’re machine-readable.  ￼
-	3.	Render citations yourself
-Because Markdown is a presentation layer; provenance is structured data. Conflating them produces the garbage you showed.
-	4.	Two-pass formatting is optional but clean
-Because Deep Research doesn’t support structured output, but follow-ups via previous_interaction_id are explicitly supported.  ￼
+## Critiques of your current design (actionable, not moralizing)
 
-⸻
+1. **You asked for citations but didn’t specify a citation grammar.** That’s why you got `[cite: 4]` and publisher-name-only “sources”. The model did what you asked: “citations exist”, not “citations are linkable and parseable”.
 
-What parts of the suspect agent report I agree/disagree with
-	•	Agree with the core point: you’re capturing only the final text and hoping prompting fixes provenance.
-	•	Disagree with the framing that the solution is “thought summaries” or “agent logs” as primary. That’s squishy. The Interactions API gives you hard objects (annotations + search/url results) that are the right substrate.  ￼
+2. **You assumed Deep Research would expose provenance as structured metadata.** The Deep Research docs’ streaming example does not show that surface; it only emits thought summaries and text. ([Google AI for Developers][1])
+   So “extract from logs” is the wrong strategy for this specific agent today.
 
-⸻
+3. **If you genuinely require audit-grade provenance, you picked the wrong feature.** Google Search grounding is the one that explicitly returns structured span→source mappings (`groundingSupports`) for building inline citations. ([Google AI for Developers][2])
+   Deep Research is optimized for “analyst report”, not “provenance graph”.
 
-Minimal concrete checklist to implement next
-	1.	After completion, always interactions.get(interaction_id) and store raw JSON.
-	2.	Extract:
-	•	final_text
-	•	final_annotations
-	•	all google_search_result / url_context_result blocks you can find (from stream log or outputs).
-	3.	Build source map (URL → title/status).
-	4.	Strip model [cite: ...] markers from the text.
-	5.	Insert citations based on annotations, render as footnotes with clickable URLs.
-	6.	Generate Sources section from captured URLs + statuses.
-	7.	Add coverage gates; if failed, run revision pass with previous_interaction_id.
+---
 
-This will produce Markdown reports with real clickable provenance without fighting the model.
+## Plan 2 (recommended if provenance is non-negotiable): switch to Search Grounding for structured citations
+
+If you want citations you can *prove* (segment ranges → source IDs), use a standard model with the `google_search` tool and consume `groundingMetadata.groundingSupports` + `groundingChunks` exactly as documented. ([Google AI for Developers][2])
+
+High-level pattern:
+
+1. Call `models.generate_content(... tools=[google_search] ...)`
+2. Get `response.text` + `groundingMetadata`
+3. Insert citations programmatically at `segment.endIndex` using chunk indices (the docs literally show this pattern). ([Google AI for Developers][2])
+4. Ask the model to structure the report (sections/tables) **in the prompt**, but keep citations insertion as code driven by metadata, not by model obedience.
+
+This is “with the grain” if what you want is provenance.
+
+---
+
+## Minimal implementation checklist (what to do next)
+
+1. **Change `INITIAL_RESEARCH_TEMPLATE`** to include the strict Citation Contract (URLs + `[n](URL)` only).
+2. **Add `citations.py`** with:
+
+   * `parse_sources(report_text) -> sources_map`
+   * `rewrite_inline_citations(report_text, sources_map) -> report_text`
+   * `rebuild_sources_section(sources_map) -> markdown`
+   * `validate(report_text, sources_map) -> ok/errors`
+3. **Add `--resolve-redirects` option** that follows `grounding-api-redirect` URLs and stores both URLs.
+4. **Add “formatting retry”** using `previous_interaction_id` when validation fails (use a cheaper model).
+5. **Persist `sources.json`** beside `report_vN.md` so provenance is data, not vibes.
+
+That pipeline yields Markdown outputs with clickable citations and a clean sources section even when the Deep Research agent’s native formatting is inconsistent.
+
+[1]: https://ai.google.dev/gemini-api/docs/deep-research "Gemini Deep Research Agent  |  Gemini API  |  Google AI for Developers"
+[2]: https://ai.google.dev/gemini-api/docs/google-search "Grounding with Google Search  |  Gemini API  |  Google AI for Developers"
+[3]: https://github.com/googleapis/python-genai/issues/1512 "Grounding URLs are through vertexaisearch.cloud.google · Issue #1512 · googleapis/python-genai · GitHub"

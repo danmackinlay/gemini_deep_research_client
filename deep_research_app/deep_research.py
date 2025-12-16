@@ -1,7 +1,7 @@
 """Core Gemini Deep Research API client with streaming and polling support."""
 
 import time
-from typing import Optional, Callable
+from typing import Any, Optional, Callable
 
 from google import genai
 
@@ -17,6 +17,85 @@ from deep_research_app.models import (
 
 # Type alias for streaming event callback: (event_type, text) -> None
 StreamCallback = Callable[[str, str], None]
+
+# Type alias for debug callback: (chunk_dict) -> None
+DebugCallback = Callable[[dict[str, Any]], None]
+
+
+def _serialize_chunk(chunk: Any) -> dict[str, Any]:
+    """Serialize a streaming chunk to a dict for debugging."""
+    result: dict[str, Any] = {"event_type": getattr(chunk, "event_type", None)}
+
+    if hasattr(chunk, "event_id"):
+        result["event_id"] = chunk.event_id
+
+    if hasattr(chunk, "interaction") and chunk.interaction:
+        interaction = chunk.interaction
+        result["interaction"] = {
+            "id": getattr(interaction, "id", None),
+            "status": getattr(interaction, "status", None),
+        }
+        if hasattr(interaction, "outputs") and interaction.outputs:
+            result["interaction"]["outputs"] = []
+            for output in interaction.outputs:
+                output_dict: dict[str, Any] = {
+                    "text_length": len(output.text)
+                    if hasattr(output, "text") and output.text
+                    else 0
+                }
+                if hasattr(output, "annotations") and output.annotations:
+                    output_dict["annotations"] = [
+                        {
+                            "start_index": getattr(ann, "start_index", None),
+                            "end_index": getattr(ann, "end_index", None),
+                            "source": getattr(ann, "source", None),
+                        }
+                        for ann in output.annotations
+                    ]
+                result["interaction"]["outputs"].append(output_dict)
+        if hasattr(interaction, "usage") and interaction.usage:
+            u = interaction.usage
+            result["interaction"]["usage"] = {
+                "total_input_tokens": getattr(u, "total_input_tokens", None),
+                "total_output_tokens": getattr(u, "total_output_tokens", None),
+                "total_tokens": getattr(u, "total_tokens", None),
+                "total_reasoning_tokens": getattr(u, "total_reasoning_tokens", None),
+            }
+
+    if hasattr(chunk, "delta") and chunk.delta:
+        delta = chunk.delta
+        result["delta"] = {
+            "type": getattr(delta, "type", None),
+        }
+        if hasattr(delta, "text"):
+            result["delta"]["text_length"] = len(delta.text) if delta.text else 0
+        if hasattr(delta, "thought"):
+            result["delta"]["thought_length"] = (
+                len(delta.thought) if delta.thought else 0
+            )
+        if hasattr(delta, "annotations") and delta.annotations:
+            result["delta"]["annotations"] = [
+                {
+                    "start_index": getattr(ann, "start_index", None),
+                    "end_index": getattr(ann, "end_index", None),
+                    "source": getattr(ann, "source", None),
+                }
+                for ann in delta.annotations
+            ]
+
+    # Capture any other attributes that might contain source info
+    for attr in [
+        "google_search_result",
+        "url_context_result",
+        "tool_use",
+        "tool_result",
+    ]:
+        if hasattr(chunk, attr):
+            val = getattr(chunk, attr)
+            if val is not None:
+                result[attr] = str(val)[:500]  # Truncate for readability
+
+    return result
 
 
 class DeepResearchClient:
@@ -34,6 +113,7 @@ class DeepResearchClient:
         *,
         stream: bool = True,
         on_event: Optional[StreamCallback] = None,
+        on_debug: Optional[DebugCallback] = None,
     ) -> StartResult:
         """
         Start a new Deep Research interaction.
@@ -42,6 +122,7 @@ class DeepResearchClient:
             prompt: The research query/topic
             stream: Whether to stream results (recommended)
             on_event: Callback for streaming events (event_type, text)
+            on_debug: Callback for raw chunk debugging (receives serialized chunk dict)
 
         Returns:
             StartResult with interaction_id and optionally final_markdown
@@ -62,12 +143,18 @@ class DeepResearchClient:
 
             if stream:
                 for chunk in response:
+                    if on_debug:
+                        on_debug(_serialize_chunk(chunk))
                     self._process_chunk(chunk, state, on_event)
 
                     if state.complete:
                         break
             else:
                 state.interaction_id = response.id
+
+            # Fetch canonical interaction after completion for debugging
+            if state.complete and on_debug:
+                self._debug_canonical_fetch(state.interaction_id, on_debug)
 
             return StartResult(
                 interaction_id=state.interaction_id,
@@ -94,6 +181,7 @@ class DeepResearchClient:
         *,
         stream: bool = True,
         on_event: Optional[StreamCallback] = None,
+        on_debug: Optional[DebugCallback] = None,
     ) -> StartResult:
         """
         Start research with context from a previous interaction.
@@ -117,12 +205,17 @@ class DeepResearchClient:
 
             if stream:
                 for chunk in response:
+                    if on_debug:
+                        on_debug(_serialize_chunk(chunk))
                     self._process_chunk(chunk, state, on_event)
 
                     if state.complete:
                         break
             else:
                 state.interaction_id = response.id
+
+            if state.complete and on_debug:
+                self._debug_canonical_fetch(state.interaction_id, on_debug)
 
             return StartResult(
                 interaction_id=state.interaction_id,
@@ -351,3 +444,48 @@ class DeepResearchClient:
             if on_event:
                 on_event("error", state.error)
 
+    def _debug_canonical_fetch(
+        self,
+        interaction_id: str,
+        on_debug: DebugCallback,
+    ) -> None:
+        """Fetch canonical interaction and log for debugging."""
+        try:
+            interaction = self._client.interactions.get(interaction_id)
+            result: dict[str, Any] = {
+                "canonical_fetch": True,
+                "id": interaction_id,
+                "status": getattr(interaction, "status", None),
+            }
+
+            if hasattr(interaction, "outputs") and interaction.outputs:
+                result["outputs"] = []
+                for i, output in enumerate(interaction.outputs):
+                    output_dict: dict[str, Any] = {
+                        "index": i,
+                        "text_length": len(output.text)
+                        if hasattr(output, "text") and output.text
+                        else 0,
+                    }
+                    # Capture annotations from canonical output
+                    if hasattr(output, "annotations") and output.annotations:
+                        output_dict["annotations"] = [
+                            {
+                                "start_index": getattr(ann, "start_index", None),
+                                "end_index": getattr(ann, "end_index", None),
+                                "source": getattr(ann, "source", None),
+                            }
+                            for ann in output.annotations
+                        ]
+                    result["outputs"].append(output_dict)
+
+            # Check for any tool results or other data
+            for attr in ["tool_results", "search_results", "url_context_results"]:
+                if hasattr(interaction, attr):
+                    val = getattr(interaction, attr)
+                    if val:
+                        result[attr] = str(val)[:2000]
+
+            on_debug(result)
+        except Exception as e:
+            on_debug({"canonical_fetch": True, "error": str(e)})
