@@ -10,6 +10,7 @@ from deep_research_app.deep_research import (
 )
 from deep_research_app.storage import RunStorage
 from deep_research_app.models import ResearchRun, InteractionStatus
+from deep_research_app.citations import process_report
 
 # Prompt templates
 INITIAL_RESEARCH_TEMPLATE = """Act as an expert research analyst using the Gemini Deep Research agent. Plan, search, read, and synthesize multiple sources to answer the following research query.
@@ -28,11 +29,22 @@ Produce a single, self-contained Markdown document with these sections:
 1. Executive Summary (2-3 paragraphs)
 2. Key Questions Addressed
 3. Main Findings (with subsections as needed)
-4. Evidence and Citations (use inline citations and a references section)
-5. Limitations and Open Questions
+4. Limitations and Open Questions
 
 Use Markdown tables where helpful for comparing data or sources.
 Do not include commentary about your research process; output only the report.
+
+## Citation Contract (must follow exactly)
+- Every factual claim must end with one or more inline citation links in this exact format:
+  [1](URL), [2](URL)
+  (The number in square brackets must be the clickable link itself.)
+- Do NOT use "[cite: …]", "(cite …)", or any other citation syntax.
+- At the end include a section exactly titled: "## Sources"
+  Each entry must be numbered and include a clickable Markdown link:
+  1. [Title](URL)
+  2. [Title](URL)
+- URLs must be explicit. Do not write just site names without URLs.
+- If the only URL you have is a vertexaisearch redirect URL, still include it.
 """
 
 REVISION_TEMPLATE = """You previously produced a research report in the preceding interaction.
@@ -112,7 +124,9 @@ class ResearchWorkflow:
 
         if result.complete_via_stream:
             # Streaming completed successfully
-            run.report_markdown = result.final_markdown
+            run.report_markdown = self._process_citations(
+                result.final_markdown, run.run_id, run.version, on_status
+            )
             run.status = InteractionStatus.COMPLETED
             run.usage = result.usage
             self._storage.clear_stream_state(run.run_id)
@@ -130,7 +144,9 @@ class ResearchWorkflow:
             )
 
             if poll_result.status == InteractionStatus.COMPLETED:
-                run.report_markdown = poll_result.final_markdown
+                run.report_markdown = self._process_citations(
+                    poll_result.final_markdown, run.run_id, run.version, on_status
+                )
                 run.status = InteractionStatus.COMPLETED
                 run.usage = poll_result.usage
                 self._storage.clear_stream_state(run.run_id)
@@ -192,7 +208,9 @@ class ResearchWorkflow:
 
         # Same completion/fallback logic as initial research
         if result.complete_via_stream:
-            run.report_markdown = result.final_markdown
+            run.report_markdown = self._process_citations(
+                result.final_markdown, run.run_id, run.version, on_status
+            )
             run.status = InteractionStatus.COMPLETED
             run.usage = result.usage
             self._storage.clear_stream_state(run.run_id)
@@ -208,7 +226,9 @@ class ResearchWorkflow:
             )
 
             if poll_result.status == InteractionStatus.COMPLETED:
-                run.report_markdown = poll_result.final_markdown
+                run.report_markdown = self._process_citations(
+                    poll_result.final_markdown, run.run_id, run.version, on_status
+                )
                 run.status = InteractionStatus.COMPLETED
                 run.usage = poll_result.usage
                 self._storage.clear_stream_state(run.run_id)
@@ -333,3 +353,33 @@ class ResearchWorkflow:
                 on_event(event_type, text)
 
         return wrapper
+
+    def _process_citations(
+        self,
+        report_text: Optional[str],
+        run_id: str,
+        version: int,
+        on_status: Optional[Callable[[str], None]] = None,
+    ) -> Optional[str]:
+        """Process citations in a report and save sources."""
+        if not report_text:
+            return report_text
+
+        if on_status:
+            on_status("Processing citations...")
+
+        result = process_report(report_text, resolve_redirects=True)
+
+        # Save sources
+        if result.sources:
+            self._storage.save_sources(run_id, version, result.sources)
+            if on_status:
+                on_status(f"Saved {len(result.sources)} sources")
+
+        # Log any validation errors (but don't fail)
+        if result.errors:
+            if on_status:
+                for error in result.errors:
+                    on_status(f"Citation warning: {error}")
+
+        return result.text

@@ -241,3 +241,29 @@ class RunStorage:
 
         data = json.loads(meta_path.read_text(encoding="utf-8"))
         return RunMetadata(**data)
+
+    def save_sources(self, run_id: str, version: int, sources: dict) -> None:
+        """Save sources.json for a version."""
+        run_dir = self.get_run_dir(run_id)
+        path = run_dir / f"sources_v{version}.json"
+
+        # Convert SourceInfo objects to dicts if needed
+        sources_dict = {}
+        for num, src in sources.items():
+            if hasattr(src, "title"):
+                sources_dict[num] = {
+                    "title": src.title,
+                    "url": src.url,
+                    "final_url": src.final_url,
+                }
+            else:
+                sources_dict[num] = src
+
+        path.write_text(json.dumps(sources_dict, indent=2), encoding="utf-8")
+
+    def load_sources(self, run_id: str, version: int) -> Optional[dict]:
+        """Load sources.json for a version."""
+        path = self._base_dir / run_id / f"sources_v{version}.json"
+        if not path.exists():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
