@@ -1,6 +1,6 @@
-# gemini_deep_research_client
+# Gemini Deep Research Client
 
-A local client for Google Gemini deep research built with Gradio and Google Generative AI.
+A local CLI and web client for Google's Gemini Deep Research API. Conduct AI-powered research with streaming output, iterative revisions, and persistent versioned reports.
 
 ## Setup
 
@@ -18,17 +18,68 @@ pip install uv
 uv sync
 ```
 
-### Running the Application
-
+3. Set up your Gemini API key via [direnv](https://direnv.net/):
 ```bash
-uv run python main.py
+# Create .envrc with your API key
+echo 'export GEMINI_API_KEY="your-api-key-here"' > .envrc
+direnv allow
 ```
 
-## Dependencies
+## Usage
 
-- **gradio** (>=6.1.0): Web UI framework for building interactive interfaces
-- **google-genai** (>=1.55.0): Google Generative AI SDK for accessing Gemini models
+### CLI
 
-## Development
+```bash
+# Start a new research run
+uv run deep-research new "Impact of AI on healthcare" --timeframe "2020-2024" --depth comprehensive
 
-Python version: 3.12+
+# List all research runs
+uv run deep-research list
+
+# Show a report
+uv run deep-research show <RUN_ID>
+
+# Revise a report with feedback
+uv run deep-research revise <RUN_ID> --feedback "Add more focus on economic impacts"
+
+# Check status of a running interaction
+uv run deep-research status <INTERACTION_ID>
+
+# Resume an interrupted research run
+uv run deep-research resume <RUN_ID>
+```
+
+#### CLI Options
+
+```bash
+uv run deep-research new "topic" \
+  --timeframe "2020-2024" \    # Time period constraint
+  --region "United States" \   # Geographic focus
+  --depth comprehensive \      # brief, moderate, or comprehensive
+  --max-words 5000 \           # Maximum report length
+  --focus "economics,policy"   # Comma-separated focus areas
+
+# Show thinking summaries during streaming
+uv run deep-research --show-thoughts new "topic"
+```
+
+### Web UI (Gradio)
+
+```bash
+uv run python -m deep_research_app.ui_gradio
+```
+
+## Features
+
+- **Streaming output**: Watch research progress in real-time
+- **Automatic fallback**: Falls back to polling if streaming fails
+- **Interrupt & resume**: Ctrl+C saves state; resume later with `deep-research resume`
+- **Versioned reports**: Each revision creates a new version, preserving history
+- **Iterative revisions**: Refine reports with feedback using previous context
+
+## Output
+
+Reports are saved to `runs/{run_id}/`:
+- `prompt_v1.md`, `report_v1.md` - Initial research
+- `prompt_v2.md`, `report_v2.md` - After revision
+- `meta.json` - Run metadata
