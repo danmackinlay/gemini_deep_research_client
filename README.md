@@ -2,6 +2,11 @@
 
 A local CLI and web client for Google's Gemini Deep Research API. Conduct AI-powered research with streaming output, iterative revisions, and persistent versioned reports.
 
+## See also
+
+* [Gemini Deep Research Agent  |  Gemini API  |  Google AI for Developers](https://ai.google.dev/gemini-api/docs/deep-research)
+* [Build with Gemini Deep Research](https://blog.google/technology/developers/deep-research-agent-gemini-api/)
+
 ## Setup
 
 This project uses [uv](https://github.com/astral-sh/uv) for dependency management.

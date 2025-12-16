@@ -61,6 +61,7 @@ Prompt templates (`INITIAL_RESEARCH_TEMPLATE`, `REVISION_TEMPLATE`) define the o
 - **Interrupt handling**: Ctrl+C saves stream state; use `resume` command to continue
 - **Versioned runs**: Each revision increments version, preserves previous reports
 - **Callback-based streaming**: `StreamCallback = Callable[[str, str], None]` receives `(event_type, text)` tuples
+- **Usage tracking**: Token counts captured from `chunk.interaction.usage` on `interaction.complete` events. Fields: `total_input_tokens`, `total_output_tokens`, `total_tokens`, `total_reasoning_tokens`. Persisted in `meta.json` per version, displayed in CLI output.
 
 ## Configuration
 
