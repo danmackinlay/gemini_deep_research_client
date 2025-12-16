@@ -108,6 +108,7 @@ class ResearchWorkflow:
             # Streaming completed successfully
             run.report_markdown = result.final_markdown
             run.status = InteractionStatus.COMPLETED
+            run.usage = result.usage
             self._storage.clear_stream_state(run.run_id)
         elif result.error and "Interrupted" in result.error:
             # User interrupted - state already saved via callback
@@ -125,6 +126,7 @@ class ResearchWorkflow:
             if poll_result.status == InteractionStatus.COMPLETED:
                 run.report_markdown = poll_result.final_markdown
                 run.status = InteractionStatus.COMPLETED
+                run.usage = poll_result.usage
                 self._storage.clear_stream_state(run.run_id)
             else:
                 run.status = poll_result.status
@@ -184,6 +186,7 @@ class ResearchWorkflow:
         if result.complete_via_stream:
             run.report_markdown = result.final_markdown
             run.status = InteractionStatus.COMPLETED
+            run.usage = result.usage
             self._storage.clear_stream_state(run.run_id)
         elif result.error and "Interrupted" in result.error:
             run.status = InteractionStatus.INTERRUPTED
@@ -199,6 +202,7 @@ class ResearchWorkflow:
             if poll_result.status == InteractionStatus.COMPLETED:
                 run.report_markdown = poll_result.final_markdown
                 run.status = InteractionStatus.COMPLETED
+                run.usage = poll_result.usage
                 self._storage.clear_stream_state(run.run_id)
             else:
                 run.status = poll_result.status
@@ -237,6 +241,7 @@ class ResearchWorkflow:
             resumed = result.final_markdown or ""
             run.report_markdown = partial + resumed
             run.status = InteractionStatus.COMPLETED
+            run.usage = result.usage
             self._storage.clear_stream_state(run_id)
         else:
             # Fall back to polling
@@ -250,6 +255,7 @@ class ResearchWorkflow:
             if poll_result.status == InteractionStatus.COMPLETED:
                 run.report_markdown = poll_result.final_markdown
                 run.status = InteractionStatus.COMPLETED
+                run.usage = poll_result.usage
                 self._storage.clear_stream_state(run_id)
             else:
                 run.status = poll_result.status
