@@ -19,6 +19,16 @@ class InteractionStatus(str, Enum):
 
 
 @dataclass
+class UsageMetadata:
+    """Token usage information from API response."""
+
+    prompt_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    thinking_tokens: int = 0
+
+
+@dataclass
 class StreamState:
     """Tracks state during streaming for resume support."""
 
@@ -28,6 +38,7 @@ class StreamState:
     thought_summaries: list[str] = field(default_factory=list)
     complete: bool = False
     error: Optional[str] = None
+    usage: Optional[UsageMetadata] = None
 
 
 @dataclass
@@ -39,6 +50,7 @@ class StartResult:
     final_markdown: Optional[str]
     complete_via_stream: bool
     error: Optional[str] = None
+    usage: Optional[UsageMetadata] = None
 
 
 @dataclass
@@ -50,6 +62,7 @@ class ResumeResult:
     final_markdown: Optional[str]
     complete_via_stream: bool
     error: Optional[str] = None
+    usage: Optional[UsageMetadata] = None
 
 
 @dataclass
@@ -60,6 +73,7 @@ class PollResult:
     status: InteractionStatus
     final_markdown: Optional[str]
     error: Optional[str] = None
+    usage: Optional[UsageMetadata] = None
 
 
 @dataclass
@@ -75,6 +89,7 @@ class ResearchRun:
     feedback: Optional[str] = None
     previous_interaction_id: Optional[str] = None
     status: InteractionStatus = InteractionStatus.PENDING
+    usage: Optional[UsageMetadata] = None
 
     @classmethod
     def new(cls, prompt_text: str) -> "ResearchRun":

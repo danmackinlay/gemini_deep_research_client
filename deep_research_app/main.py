@@ -118,6 +118,12 @@ def new_research(
                 f"\n[green]Report saved to:[/green] runs/{run.run_id}/report_v{run.version}.md"
             )
             console.print(f"[dim]Run ID: {run.run_id}[/dim]")
+            if run.usage:
+                console.print(
+                    f"[dim]Tokens: {run.usage.prompt_tokens:,} in / "
+                    f"{run.usage.output_tokens:,} out / "
+                    f"{run.usage.total_tokens:,} total[/dim]"
+                )
         elif run.status == InteractionStatus.INTERRUPTED:
             console.print("\n[yellow]Research interrupted.[/yellow]")
             console.print(
@@ -197,6 +203,12 @@ def revise_research(
                 f"\n[green]Revised report saved to:[/green] "
                 f"runs/{run_id}/report_v{revised_run.version}.md"
             )
+            if revised_run.usage:
+                console.print(
+                    f"[dim]Tokens: {revised_run.usage.prompt_tokens:,} in / "
+                    f"{revised_run.usage.output_tokens:,} out / "
+                    f"{revised_run.usage.total_tokens:,} total[/dim]"
+                )
         else:
             console.print(
                 f"\n[red]Revision ended with status: {revised_run.status}[/red]"
@@ -247,6 +259,21 @@ def show_report(
         console.print("[yellow]No report available (run may be incomplete)[/yellow]")
         raise typer.Exit(1)
 
+    # Show usage info from metadata
+    meta = storage._load_metadata(run_id)
+    if meta:
+        version_info = next(
+            (v for v in meta.versions if v["version"] == run.version),
+            None,
+        )
+        if version_info and version_info.get("usage"):
+            u = version_info["usage"]
+            console.print(
+                f"[dim]Tokens: {u['prompt_tokens']:,} in / "
+                f"{u['output_tokens']:,} out / "
+                f"{u['total_tokens']:,} total[/dim]\n"
+            )
+
     if raw:
         console.print(run.report_markdown)
     else:
@@ -290,7 +317,18 @@ def list_runs() -> None:
     for meta in runs:
         topic_preview = meta.topic[:60] + "..." if len(meta.topic) > 60 else meta.topic
         console.print(f"  [cyan]{meta.run_id}[/cyan] (v{meta.latest_version}) - {topic_preview}")
-        console.print(f"    Created: {meta.created_at}")
+
+        # Get usage from latest version
+        latest_version = next(
+            (v for v in meta.versions if v["version"] == meta.latest_version),
+            None,
+        )
+        tokens_info = ""
+        if latest_version and latest_version.get("usage"):
+            u = latest_version["usage"]
+            tokens_info = f" | Tokens: {u['total_tokens']:,}"
+
+        console.print(f"    Created: {meta.created_at}{tokens_info}")
 
 
 @app.command("resume")

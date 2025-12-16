@@ -209,6 +209,12 @@ class RunStorage:
             "status": run.status.value,
             "feedback": run.feedback,
             "previous_interaction_id": run.previous_interaction_id,
+            "usage": {
+                "prompt_tokens": run.usage.prompt_tokens,
+                "output_tokens": run.usage.output_tokens,
+                "total_tokens": run.usage.total_tokens,
+                "thinking_tokens": run.usage.thinking_tokens,
+            } if run.usage else None,
         }
 
         # Replace existing version or append

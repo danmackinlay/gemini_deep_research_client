@@ -12,6 +12,7 @@ from deep_research_app.models import (
     PollResult,
     StreamState,
     InteractionStatus,
+    UsageMetadata,
 )
 
 # Type alias for streaming event callback: (event_type, text) -> None
@@ -74,6 +75,7 @@ class DeepResearchClient:
                 final_markdown=state.accumulated_text if state.complete else None,
                 complete_via_stream=state.complete,
                 error=state.error,
+                usage=state.usage,
             )
 
         except KeyboardInterrupt:
@@ -128,6 +130,7 @@ class DeepResearchClient:
                 final_markdown=state.accumulated_text if state.complete else None,
                 complete_via_stream=state.complete,
                 error=state.error,
+                usage=state.usage,
             )
 
         except KeyboardInterrupt:
@@ -175,6 +178,7 @@ class DeepResearchClient:
                 final_markdown=state.accumulated_text if state.complete else None,
                 complete_via_stream=state.complete,
                 error=state.error,
+                usage=state.usage,
             )
 
         except KeyboardInterrupt:
@@ -216,10 +220,23 @@ class DeepResearchClient:
                     final_text = None
                     if interaction.outputs:
                         final_text = interaction.outputs[-1].text
+
+                    # Capture usage from completed interaction
+                    usage = None
+                    if hasattr(interaction, "usage") and interaction.usage:
+                        u = interaction.usage
+                        usage = UsageMetadata(
+                            prompt_tokens=u.total_input_tokens,
+                            output_tokens=u.total_output_tokens,
+                            total_tokens=u.total_tokens,
+                            thinking_tokens=u.total_reasoning_tokens,
+                        )
+
                     return PollResult(
                         interaction_id=interaction_id,
                         status=InteractionStatus.COMPLETED,
                         final_markdown=final_text,
+                        usage=usage,
                     )
 
                 if status in ("failed", "cancelled"):
@@ -314,6 +331,17 @@ class DeepResearchClient:
         # Handle completion
         if chunk.event_type == "interaction.complete":
             state.complete = True
+            # Capture usage from completion event
+            if hasattr(chunk, "interaction") and chunk.interaction:
+                interaction = chunk.interaction
+                if hasattr(interaction, "usage") and interaction.usage:
+                    usage = interaction.usage
+                    state.usage = UsageMetadata(
+                        prompt_tokens=usage.total_input_tokens,
+                        output_tokens=usage.total_output_tokens,
+                        total_tokens=usage.total_tokens,
+                        thinking_tokens=usage.total_reasoning_tokens,
+                    )
             if on_event:
                 on_event("complete", "")
 
@@ -322,3 +350,4 @@ class DeepResearchClient:
             state.error = str(chunk)
             if on_event:
                 on_event("error", state.error)
+

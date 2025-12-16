@@ -68,3 +68,9 @@ Settings loaded via `pydantic-settings` from environment:
 - `GEMINI_API_KEY` (required) - Set in `.envrc` for direnv
 - `runs_dir` - Default `./runs`
 - `agent_name` - Default `deep-research-pro-preview-12-2025`
+
+## Engineering policies
+- No backward-compat promises—break APIs when it improves the stack, then update configs/docs. Delete rather than deprecate.
+- Prefer in-code asserts over permissive behaviour; fail early on shape/layout issues.
+- always lint code with `uv run ruff format; uv run ruff check --fix` but it is advisory; we only block on syntax/import errors.
+- Leave `# FIXME` notes (with reasons) instead of half-built abstractions.
