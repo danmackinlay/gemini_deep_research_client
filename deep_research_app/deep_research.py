@@ -48,7 +48,7 @@ class DeepResearchClient:
         state = StreamState(interaction_id="")
 
         try:
-            response = self._client.aio.interactions.create(
+            response = self._client.interactions.create(
                 input=prompt,
                 agent=self._agent,
                 background=True,
@@ -101,7 +101,7 @@ class DeepResearchClient:
         state = StreamState(interaction_id="")
 
         try:
-            response = self._client.aio.interactions.create(
+            response = self._client.interactions.create(
                 input=prompt,
                 agent=self._agent,
                 background=True,
@@ -157,7 +157,7 @@ class DeepResearchClient:
         )
 
         try:
-            response = self._client.aio.interactions.get(
+            response = self._client.interactions.get(
                 id=interaction_id,
                 stream=True,
                 last_event_id=last_event_id,
@@ -206,7 +206,7 @@ class DeepResearchClient:
 
         while True:
             try:
-                interaction = self._client.aio.interactions.get(interaction_id)
+                interaction = self._client.interactions.get(interaction_id)
                 status = interaction.status
 
                 if on_status:
@@ -260,7 +260,7 @@ class DeepResearchClient:
 
         Returns (status, final_text_if_complete)
         """
-        interaction = self._client.aio.interactions.get(interaction_id)
+        interaction = self._client.interactions.get(interaction_id)
         status_str = interaction.status
 
         status_map = {
