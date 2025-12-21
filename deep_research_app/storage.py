@@ -53,45 +53,6 @@ class RunStorage:
 
         return run_dir
 
-    def save_stream_state(
-        self,
-        run_id: str,
-        interaction_id: str,
-        last_event_id: str,
-        partial_text: str,
-    ) -> None:
-        """
-        Save streaming state for potential resume.
-
-        Creates runs/{run_id}/stream_state.json
-        """
-        run_dir = self.get_run_dir(run_id)
-        state_path = run_dir / "stream_state.json"
-        state_path.write_text(
-            json.dumps(
-                {
-                    "interaction_id": interaction_id,
-                    "last_event_id": last_event_id,
-                    "partial_text": partial_text,
-                    "saved_at": datetime.now().isoformat(),
-                }
-            ),
-            encoding="utf-8",
-        )
-
-    def load_stream_state(self, run_id: str) -> Optional[dict]:
-        """Load saved stream state for resume."""
-        state_path = self.get_run_dir(run_id) / "stream_state.json"
-        if state_path.exists():
-            return json.loads(state_path.read_text(encoding="utf-8"))
-        return None
-
-    def clear_stream_state(self, run_id: str) -> None:
-        """Clear stream state after successful completion."""
-        state_path = self.get_run_dir(run_id) / "stream_state.json"
-        if state_path.exists():
-            state_path.unlink()
-
     def load_latest_run(self, run_id: str) -> Optional[ResearchRun]:
         """Load the latest version of a run."""
         meta = self.load_metadata(run_id)

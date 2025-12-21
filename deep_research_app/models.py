@@ -1,9 +1,9 @@
 """Data models for the Deep Research client."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Literal, Optional
+from typing import Optional
 import uuid
 
 
@@ -56,53 +56,6 @@ class UsageMetadata:
             total_tokens=data.get("total_tokens", 0),
             thinking_tokens=data.get("thinking_tokens", 0),
         )
-
-
-@dataclass
-class StreamState:
-    """Tracks state during streaming for resume support."""
-
-    interaction_id: str
-    last_event_id: Optional[str] = None
-    accumulated_text: str = ""
-    thought_summaries: list[str] = field(default_factory=list)
-    complete: bool = False
-    error: Optional[str] = None
-    usage: Optional[UsageMetadata] = None
-
-
-@dataclass(frozen=True)
-class StreamEvent:
-    """Typed event emitted during streaming."""
-
-    type: Literal["start", "text", "thought", "complete", "error"]
-    text: str = ""
-    interaction_id: Optional[str] = None
-    event_id: Optional[str] = None
-
-
-@dataclass
-class StartResult:
-    """Result from starting a new research interaction."""
-
-    interaction_id: str
-    last_event_id: Optional[str]
-    final_markdown: Optional[str]
-    complete_via_stream: bool
-    error: Optional[str] = None
-    usage: Optional[UsageMetadata] = None
-
-
-@dataclass
-class ResumeResult:
-    """Result from resuming an interrupted stream."""
-
-    interaction_id: str
-    last_event_id: Optional[str]
-    final_markdown: Optional[str]
-    complete_via_stream: bool
-    error: Optional[str] = None
-    usage: Optional[UsageMetadata] = None
 
 
 @dataclass

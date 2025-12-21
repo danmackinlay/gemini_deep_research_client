@@ -6,7 +6,7 @@ import gradio as gr
 
 from deep_research_app.workflow import ResearchWorkflow
 from deep_research_app.storage import RunStorage
-from deep_research_app.models import InteractionStatus, ResearchConstraints, StreamEvent
+from deep_research_app.models import InteractionStatus, ResearchConstraints
 
 
 def create_ui() -> gr.Blocks:
@@ -221,18 +221,14 @@ def create_ui() -> gr.Blocks:
                 focus=focus,
             )
 
-            accumulated_text = ""
-            current_run_id = ""
-
-            def on_event(event: StreamEvent) -> None:
-                nonlocal accumulated_text, current_run_id
-                if event.type == "start":
-                    current_run_id = event.interaction_id or ""
-                elif event.type == "text":
-                    accumulated_text += event.text
-
-            def on_status(status: str) -> None:
-                pass  # Could update status in real-time if needed
+            # Show "in progress" while polling
+            yield {
+                status_output: "Running... (this may take several minutes)",
+                run_id_output: "",
+                report_output: "",
+                cost_output: "",
+                download_btn: gr.DownloadButton(visible=False),
+            }
 
             try:
                 if mode == "REVISION" and loaded_run_id:
@@ -251,20 +247,15 @@ def create_ui() -> gr.Blocks:
                         run_id=loaded_run_id,
                         feedback=feedback.strip(),
                         constraints=constraints,
-                        on_event=on_event,
                     )
                 else:
                     # New research mode
                     run = workflow.run_initial_research(
                         topic=topic,
                         constraints=constraints,
-                        on_event=on_event,
-                        on_status=on_status,
                     )
 
-                report_text = (
-                    run.report_markdown or accumulated_text or "No report generated"
-                )
+                report_text = run.report_markdown or "No report generated"
                 # Use the persistent report path instead of temp file
                 download_path = storage.get_report_path(run.run_id, run.version)
                 yield {
@@ -283,8 +274,8 @@ def create_ui() -> gr.Blocks:
             except Exception as e:
                 yield {
                     status_output: f"Error: {e}",
-                    run_id_output: current_run_id,
-                    report_output: accumulated_text or "",
+                    run_id_output: "",
+                    report_output: "",
                     cost_output: "",
                     download_btn: gr.DownloadButton(visible=False),
                 }

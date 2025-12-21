@@ -5,13 +5,12 @@ from deep_research_app.models import (
     InteractionStatus,
     ResearchRun,
     RunMetadata,
-    StartResult,
     PollResult,
-    ResumeResult,
+    ResearchConstraints,
 )
 from deep_research_app.deep_research import DeepResearchClient
 from deep_research_app.storage import RunStorage
-from deep_research_app.workflow import ResearchWorkflow, ResearchConstraints
+from deep_research_app.workflow import ResearchWorkflow
 
 __all__ = [
     "Settings",
@@ -19,9 +18,7 @@ __all__ = [
     "InteractionStatus",
     "ResearchRun",
     "RunMetadata",
-    "StartResult",
     "PollResult",
-    "ResumeResult",
     "DeepResearchClient",
     "RunStorage",
     "ResearchWorkflow",

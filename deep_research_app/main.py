@@ -16,7 +16,6 @@ from deep_research_app.models import (
     InteractionStatus,
     UsageMetadata,
     ResearchConstraints,
-    StreamEvent,
 )
 
 app = typer.Typer(
@@ -27,27 +26,19 @@ app = typer.Typer(
 console = Console()
 
 # Global state for options
-_show_thoughts: bool = False
 _debug_chunks: bool = False
 
 
 @app.callback()
 def main_callback(
-    thoughts: bool = typer.Option(
-        False,
-        "--show-thoughts",
-        "-t",
-        help="Show thinking summaries during streaming",
-    ),
     debug_chunks: bool = typer.Option(
         False,
         "--debug-chunks",
-        help="Log raw API chunks to debug_chunks.jsonl for citation debugging",
+        help="Log raw API data to debug_chunks.jsonl for debugging",
     ),
 ) -> None:
     """Global options for deep-research commands."""
-    global _show_thoughts, _debug_chunks
-    _show_thoughts = thoughts
+    global _debug_chunks
     _debug_chunks = debug_chunks
 
 
@@ -97,44 +88,31 @@ def new_research(
         Panel(f"[bold]Starting research on:[/bold] {topic}", title="Deep Research")
     )
 
-    def on_event(event: StreamEvent) -> None:
-        if event.type == "start":
-            console.print(f"[dim]Interaction: {event.interaction_id}[/dim]")
-        elif event.type == "text":
-            console.print(event.text, end="")
-        elif event.type == "thought" and _show_thoughts:
-            console.print(f"\n[yellow][THOUGHT][/yellow] {event.text}")
-        elif event.type == "complete":
-            console.print("\n[green]Research complete![/green]")
-        elif event.type == "error":
-            console.print(f"\n[red]Error: {event.text}[/red]")
-
     def on_status(status: str) -> None:
-        console.print(f"[dim]Status: {status}[/dim]")
+        console.print(f"[dim]{status}[/dim]")
 
-    # Debug callback: collect chunks in memory, write to file after we have run_id
-    debug_chunks: list[dict[str, Any]] = []
+    # Debug callback: collect data in memory, write to file after we have run_id
+    debug_data: list[dict[str, Any]] = []
 
-    def on_debug(chunk_dict: dict[str, Any]) -> None:
-        debug_chunks.append(chunk_dict)
+    def on_debug(data: dict[str, Any]) -> None:
+        debug_data.append(data)
 
     try:
         run = workflow.run_initial_research(
             topic=topic,
             constraints=constraints,
-            on_event=on_event,
             on_status=on_status,
             on_debug=on_debug if _debug_chunks else None,
         )
 
-        # Write debug chunks to file if enabled
-        if _debug_chunks and debug_chunks:
+        # Write debug data to file if enabled
+        if _debug_chunks and debug_data:
             debug_path = Path("runs") / run.run_id / "debug_chunks.jsonl"
             debug_path.parent.mkdir(parents=True, exist_ok=True)
             with debug_path.open("w", encoding="utf-8") as f:
-                for chunk in debug_chunks:
-                    f.write(json.dumps(chunk) + "\n")
-            console.print(f"[dim]Debug chunks saved to: {debug_path}[/dim]")
+                for item in debug_data:
+                    f.write(json.dumps(item) + "\n")
+            console.print(f"[dim]Debug data saved to: {debug_path}[/dim]")
 
         if run.status == InteractionStatus.COMPLETED:
             console.print(
@@ -145,10 +123,7 @@ def new_research(
                 console.print(f"[dim]{run.usage.format_cost()}[/dim]")
         elif run.status == InteractionStatus.INTERRUPTED:
             console.print("\n[yellow]Research interrupted.[/yellow]")
-            console.print(
-                f"Run `deep-research status {run.interaction_id}` to check completion."
-            )
-            console.print(f"Run `deep-research resume {run.run_id}` to resume.")
+            console.print(f"Run `deep-research resume {run.run_id}` to resume polling.")
         else:
             console.print(f"\n[red]Research ended with status: {run.status}[/red]")
 
@@ -202,19 +177,14 @@ def revise_research(
 
     console.print(f"\n[bold]Revising with feedback:[/bold] {feedback}\n")
 
-    def on_event(event: StreamEvent) -> None:
-        if event.type == "text":
-            console.print(event.text, end="")
-        elif event.type == "thought" and _show_thoughts:
-            console.print(f"\n[yellow][THOUGHT][/yellow] {event.text}")
-        elif event.type == "complete":
-            console.print("\n[green]Revision complete![/green]")
+    def on_status(status: str) -> None:
+        console.print(f"[dim]{status}[/dim]")
 
     try:
         revised_run = workflow.revise_research(
             run_id=run_id,
             feedback=feedback,
-            on_event=on_event,
+            on_status=on_status,
         )
 
         if revised_run.status == InteractionStatus.COMPLETED:
@@ -342,26 +312,21 @@ def resume_run(
     run_id: str = typer.Argument(..., help="Run ID to resume"),
 ) -> None:
     """
-    Resume an interrupted research run.
+    Resume polling for an incomplete research run.
+
+    Use this when a run was interrupted before completion.
 
     Example:
         deep-research resume abc123
     """
     workflow = ResearchWorkflow()
 
-    def on_event(event: StreamEvent) -> None:
-        if event.type == "text":
-            console.print(event.text, end="")
-        elif event.type == "complete":
-            console.print("\n[green]Research complete![/green]")
-
     def on_status(status: str) -> None:
-        console.print(f"[dim]Status: {status}[/dim]")
+        console.print(f"[dim]{status}[/dim]")
 
     try:
-        run = workflow.resume_interrupted(
+        run = workflow.resume_incomplete(
             run_id,
-            on_event=on_event,
             on_status=on_status,
         )
 
@@ -369,6 +334,8 @@ def resume_run(
             console.print(
                 f"\n[green]Report saved to:[/green] runs/{run.run_id}/report_v{run.version}.md"
             )
+            if run.usage:
+                console.print(f"[dim]{run.usage.format_cost()}[/dim]")
         else:
             console.print(f"\n[yellow]Status: {run.status}[/yellow]")
 
