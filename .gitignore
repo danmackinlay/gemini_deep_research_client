@@ -209,6 +209,10 @@ __marimo__/
 #secrets
 .envrc
 
+# config
+.claude/
+.vscode/
+
 # artefacts
 runs/
 repomix*.xml
