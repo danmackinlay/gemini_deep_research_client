@@ -12,7 +12,37 @@ from rich.panel import Panel
 from deep_research_app.workflow import ResearchWorkflow, ResearchConstraints
 from deep_research_app.storage import RunStorage
 from deep_research_app.deep_research import DeepResearchClient
-from deep_research_app.models import InteractionStatus
+from deep_research_app.models import InteractionStatus, UsageMetadata
+
+# Deep Research uses Gemini 3 Pro internally
+# See: https://ai.google.dev/gemini-api/docs/deep-research
+# Pricing per 1M tokens (as of Dec 2024)
+PRICE_PER_M_INPUT = 2.0  # $2 per 1M input tokens
+PRICE_PER_M_OUTPUT = 12.0  # $12 per 1M output tokens
+# FIXME: Verify current rates and update if changed
+
+
+def format_cost(usage: UsageMetadata | dict | None) -> str:
+    """Format token usage with cost estimate."""
+    if not usage:
+        return ""
+    # Handle both UsageMetadata objects and dicts
+    if isinstance(usage, dict):
+        prompt = usage.get("prompt_tokens", 0)
+        output = usage.get("output_tokens", 0)
+        total = usage.get("total_tokens", 0)
+    else:
+        prompt = usage.prompt_tokens
+        output = usage.output_tokens
+        total = usage.total_tokens
+
+    cost = (prompt / 1_000_000) * PRICE_PER_M_INPUT + (
+        output / 1_000_000
+    ) * PRICE_PER_M_OUTPUT
+    return (
+        f"Tokens: {prompt:,} in / {output:,} out / {total:,} total | Cost: ${cost:.4f}"
+    )
+
 
 app = typer.Typer(
     name="deep-research",
@@ -144,11 +174,7 @@ def new_research(
             )
             console.print(f"[dim]Run ID: {run.run_id}[/dim]")
             if run.usage:
-                console.print(
-                    f"[dim]Tokens: {run.usage.prompt_tokens:,} in / "
-                    f"{run.usage.output_tokens:,} out / "
-                    f"{run.usage.total_tokens:,} total[/dim]"
-                )
+                console.print(f"[dim]{format_cost(run.usage)}[/dim]")
         elif run.status == InteractionStatus.INTERRUPTED:
             console.print("\n[yellow]Research interrupted.[/yellow]")
             console.print(
@@ -229,11 +255,7 @@ def revise_research(
                 f"runs/{run_id}/report_v{revised_run.version}.md"
             )
             if revised_run.usage:
-                console.print(
-                    f"[dim]Tokens: {revised_run.usage.prompt_tokens:,} in / "
-                    f"{revised_run.usage.output_tokens:,} out / "
-                    f"{revised_run.usage.total_tokens:,} total[/dim]"
-                )
+                console.print(f"[dim]{format_cost(revised_run.usage)}[/dim]")
         else:
             console.print(
                 f"\n[red]Revision ended with status: {revised_run.status}[/red]"
@@ -292,12 +314,7 @@ def show_report(
             None,
         )
         if version_info and version_info.get("usage"):
-            u = version_info["usage"]
-            console.print(
-                f"[dim]Tokens: {u['prompt_tokens']:,} in / "
-                f"{u['output_tokens']:,} out / "
-                f"{u['total_tokens']:,} total[/dim]\n"
-            )
+            console.print(f"[dim]{format_cost(version_info['usage'])}[/dim]\n")
 
     if raw:
         console.print(run.report_markdown)
@@ -350,12 +367,15 @@ def list_runs() -> None:
             (v for v in meta.versions if v["version"] == meta.latest_version),
             None,
         )
-        tokens_info = ""
+        cost_info = ""
         if latest_version and latest_version.get("usage"):
             u = latest_version["usage"]
-            tokens_info = f" | Tokens: {u['total_tokens']:,}"
+            cost = (u.get("prompt_tokens", 0) / 1_000_000) * PRICE_PER_M_INPUT + (
+                u.get("output_tokens", 0) / 1_000_000
+            ) * PRICE_PER_M_OUTPUT
+            cost_info = f" | ${cost:.4f}"
 
-        console.print(f"    Created: {meta.created_at}{tokens_info}")
+        console.print(f"    Created: {meta.created_at}{cost_info}")
 
 
 @app.command("resume")
