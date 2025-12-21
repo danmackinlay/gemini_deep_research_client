@@ -6,7 +6,26 @@ import gradio as gr
 
 from deep_research_app.workflow import ResearchWorkflow, ResearchConstraints
 from deep_research_app.storage import RunStorage
-from deep_research_app.models import InteractionStatus
+from deep_research_app.models import InteractionStatus, UsageMetadata
+
+# Deep Research uses Gemini 3 Pro internally
+# See: https://ai.google.dev/gemini-api/docs/deep-research
+# Pricing per 1M tokens (as of Dec 2024)
+PRICE_PER_M_INPUT = 2.0  # $2 per 1M input tokens
+PRICE_PER_M_OUTPUT = 12.0  # $12 per 1M output tokens
+# FIXME: Verify current rates and update if changed
+
+
+def calculate_cost(usage: UsageMetadata | None) -> str:
+    """Calculate cost in dollars from token usage and format for display."""
+    if not usage:
+        return ""
+    input_cost = (usage.prompt_tokens / 1_000_000) * PRICE_PER_M_INPUT
+    output_cost = (usage.output_tokens / 1_000_000) * PRICE_PER_M_OUTPUT
+    total_cost = input_cost + output_cost
+    return (
+        f"{usage.prompt_tokens:,} in / {usage.output_tokens:,} out | ${total_cost:.4f}"
+    )
 
 
 def create_ui() -> gr.Blocks:
@@ -60,6 +79,10 @@ def create_ui() -> gr.Blocks:
                     label="Run ID",
                     interactive=False,
                 )
+                cost_output = gr.Textbox(
+                    label="Usage & Cost",
+                    interactive=False,
+                )
 
             report_output = gr.Markdown(label="Research Report")
 
@@ -83,7 +106,11 @@ def create_ui() -> gr.Blocks:
             )
 
             revise_btn = gr.Button("Revise Report", variant="primary")
-            revised_status = gr.Textbox(label="Revision Status", interactive=False)
+            with gr.Row():
+                revised_status = gr.Textbox(label="Revision Status", interactive=False)
+                revised_cost_output = gr.Textbox(
+                    label="Usage & Cost", interactive=False
+                )
             revised_report_output = gr.Markdown(label="Revised Report")
 
         with gr.Tab("History"):
@@ -108,6 +135,7 @@ def create_ui() -> gr.Blocks:
                     status_output: "Error: Please enter a topic",
                     run_id_output: "",
                     report_output: "",
+                    cost_output: "",
                 }
                 return
 
@@ -156,6 +184,7 @@ def create_ui() -> gr.Blocks:
                     report_output: run.report_markdown
                     or accumulated_text
                     or "No report generated",
+                    cost_output: calculate_cost(run.usage),
                 }
 
             except Exception as e:
@@ -163,6 +192,7 @@ def create_ui() -> gr.Blocks:
                     status_output: f"Error: {e}",
                     run_id_output: current_run_id,
                     report_output: accumulated_text or "",
+                    cost_output: "",
                 }
 
         def load_run_for_revision(run_id: str) -> dict:
@@ -189,6 +219,7 @@ def create_ui() -> gr.Blocks:
                 yield {
                     revised_status: "Error: Please enter a Run ID",
                     revised_report_output: "",
+                    revised_cost_output: "",
                 }
                 return
 
@@ -196,6 +227,7 @@ def create_ui() -> gr.Blocks:
                 yield {
                     revised_status: "Error: Please enter feedback",
                     revised_report_output: "",
+                    revised_cost_output: "",
                 }
                 return
 
@@ -220,17 +252,20 @@ def create_ui() -> gr.Blocks:
                     revised_report_output: run.report_markdown
                     or accumulated_text
                     or "No report",
+                    revised_cost_output: calculate_cost(run.usage),
                 }
 
             except ValueError as e:
                 yield {
                     revised_status: f"Error: {e}",
                     revised_report_output: "",
+                    revised_cost_output: "",
                 }
             except Exception as e:
                 yield {
                     revised_status: f"Error: {e}",
                     revised_report_output: accumulated_text or "",
+                    revised_cost_output: "",
                 }
 
         def refresh_runs() -> list[list]:
@@ -257,7 +292,7 @@ def create_ui() -> gr.Blocks:
                 max_words_input,
                 focus_input,
             ],
-            outputs=[status_output, run_id_output, report_output],
+            outputs=[status_output, run_id_output, report_output, cost_output],
         )
 
         load_btn.click(
@@ -269,7 +304,7 @@ def create_ui() -> gr.Blocks:
         revise_btn.click(
             fn=do_revision,
             inputs=[revise_run_id, feedback_input],
-            outputs=[revised_status, revised_report_output],
+            outputs=[revised_status, revised_report_output, revised_cost_output],
         )
 
         refresh_btn.click(
