@@ -156,6 +156,10 @@ class DeepResearchClient:
             if state.complete and on_debug:
                 self._debug_canonical_fetch(state.interaction_id, on_debug)
 
+            # If streaming completed but didn't include usage, fetch it
+            if state.complete and state.usage is None:
+                state.usage = self._fetch_usage(state.interaction_id)
+
             return StartResult(
                 interaction_id=state.interaction_id,
                 last_event_id=state.last_event_id,
@@ -217,6 +221,10 @@ class DeepResearchClient:
             if state.complete and on_debug:
                 self._debug_canonical_fetch(state.interaction_id, on_debug)
 
+            # If streaming completed but didn't include usage, fetch it
+            if state.complete and state.usage is None:
+                state.usage = self._fetch_usage(state.interaction_id)
+
             return StartResult(
                 interaction_id=state.interaction_id,
                 last_event_id=state.last_event_id,
@@ -264,6 +272,10 @@ class DeepResearchClient:
 
                 if state.complete:
                     break
+
+            # If streaming completed but didn't include usage, fetch it
+            if state.complete and state.usage is None:
+                state.usage = self._fetch_usage(interaction_id)
 
             return ResumeResult(
                 interaction_id=interaction_id,
@@ -443,6 +455,22 @@ class DeepResearchClient:
             state.error = str(chunk)
             if on_event:
                 on_event("error", state.error)
+
+    def _fetch_usage(self, interaction_id: str) -> Optional[UsageMetadata]:
+        """Fetch usage from canonical interaction if available."""
+        try:
+            interaction = self._client.interactions.get(interaction_id)
+            if hasattr(interaction, "usage") and interaction.usage:
+                u = interaction.usage
+                return UsageMetadata(
+                    prompt_tokens=u.total_input_tokens,
+                    output_tokens=u.total_output_tokens,
+                    total_tokens=u.total_tokens,
+                    thinking_tokens=u.total_reasoning_tokens,
+                )
+        except Exception:
+            pass
+        return None
 
     def _debug_canonical_fetch(
         self,

@@ -6,7 +6,12 @@ from pathlib import Path
 from typing import Optional
 
 from deep_research_app.config import get_settings
-from deep_research_app.models import ResearchRun, RunMetadata, InteractionStatus
+from deep_research_app.models import (
+    ResearchRun,
+    RunMetadata,
+    InteractionStatus,
+    UsageMetadata,
+)
 
 
 class RunStorage:
@@ -103,6 +108,11 @@ class RunStorage:
             None,
         )
 
+        # Hydrate usage from metadata if present
+        usage = None
+        if version_info and version_info.get("usage"):
+            usage = UsageMetadata.from_dict(version_info["usage"])
+
         return ResearchRun(
             run_id=run_id,
             interaction_id=version_info["interaction_id"] if version_info else "",
@@ -129,6 +139,7 @@ class RunStorage:
                 if version_info
                 else InteractionStatus.PENDING
             ),
+            usage=usage,
         )
 
     def load_run_version(self, run_id: str, version: int) -> Optional[ResearchRun]:
@@ -148,6 +159,11 @@ class RunStorage:
             (v for v in meta.versions if v["version"] == version),
             None,
         )
+
+        # Hydrate usage from metadata if present
+        usage = None
+        if version_info and version_info.get("usage"):
+            usage = UsageMetadata.from_dict(version_info["usage"])
 
         return ResearchRun(
             run_id=run_id,
@@ -173,6 +189,7 @@ class RunStorage:
                 if version_info
                 else InteractionStatus.PENDING
             ),
+            usage=usage,
         )
 
     def list_runs(self) -> list[RunMetadata]:
