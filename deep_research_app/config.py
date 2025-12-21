@@ -3,7 +3,12 @@
 from pathlib import Path
 from functools import lru_cache
 
+from pydantic import ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class ConfigurationError(Exception):
+    """Raised when required configuration is missing or invalid."""
 
 
 class Settings(BaseSettings):
@@ -27,4 +32,16 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     """Get cached settings instance."""
-    return Settings()
+    try:
+        return Settings()
+    except ValidationError as e:
+        missing = [err["loc"][0] for err in e.errors() if err["type"] == "missing"]
+        if "gemini_api_key" in missing:
+            raise ConfigurationError(
+                "GEMINI_API_KEY environment variable is not set.\n\n"
+                "Set it using one of:\n"
+                "  export GEMINI_API_KEY='your-api-key'\n"
+                "  echo 'export GEMINI_API_KEY=\"your-key\"' > .envrc && direnv allow\n"
+                "  echo 'GEMINI_API_KEY=your-key' > .env"
+            ) from None
+        raise

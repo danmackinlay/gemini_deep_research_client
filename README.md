@@ -68,7 +68,7 @@ uv run deep-research new "topic" \
 uv run deep-research --show-thoughts new "topic"
 ```
 
-### Web UI (Gradio)
+### Web UI
 
 ```bash
 uv run python -m deep_research_app.ui_gradio

@@ -72,6 +72,6 @@ Settings loaded via `pydantic-settings` from environment:
 
 ## Engineering policies
 - No backward-compat promises—break APIs when it improves the stack, then update configs/docs. Delete rather than deprecate.
-- Prefer in-code asserts over permissive behaviour; fail early on shape/layout issues.
+- Prefer in-code asserts over permissive behaviour; fail early on data format issues.
 - always lint code with `uv run ruff format; uv run ruff check --fix` but it is advisory; we only block on syntax/import errors.
 - Leave `# FIXME` notes (with reasons) instead of half-built abstractions.
