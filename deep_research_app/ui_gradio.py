@@ -1,5 +1,7 @@
 """Gradio web UI for the Deep Research client."""
 
+from pathlib import Path
+from tempfile import gettempdir
 from typing import Generator
 
 import gradio as gr
@@ -26,6 +28,15 @@ def calculate_cost(usage: UsageMetadata | None) -> str:
     return (
         f"{usage.prompt_tokens:,} in / {usage.output_tokens:,} out | ${total_cost:.4f}"
     )
+
+
+def prepare_download(report_text: str | None, run_id: str) -> str | None:
+    """Write report to temp file and return path for download."""
+    if not report_text:
+        return None
+    path = Path(gettempdir()) / f"{run_id}_report.md"
+    path.write_text(report_text, encoding="utf-8")
+    return str(path)
 
 
 def create_ui() -> gr.Blocks:
@@ -84,7 +95,10 @@ def create_ui() -> gr.Blocks:
                     interactive=False,
                 )
 
-            report_output = gr.Markdown(label="Research Report")
+            report_output = gr.Markdown(label="Research Report", buttons=["copy"])
+            download_btn = gr.DownloadButton(
+                "Download Report (.md)", visible=False, variant="secondary"
+            )
 
             thoughts_output = gr.Textbox(
                 label="Thinking Summaries",
@@ -97,7 +111,9 @@ def create_ui() -> gr.Blocks:
             revise_run_id = gr.Textbox(label="Run ID to Revise")
             load_btn = gr.Button("Load Run")
 
-            current_report_display = gr.Markdown(label="Current Report")
+            current_report_display = gr.Markdown(
+                label="Current Report", buttons=["copy"]
+            )
 
             feedback_input = gr.Textbox(
                 label="Feedback",
@@ -111,7 +127,12 @@ def create_ui() -> gr.Blocks:
                 revised_cost_output = gr.Textbox(
                     label="Usage & Cost", interactive=False
                 )
-            revised_report_output = gr.Markdown(label="Revised Report")
+            revised_report_output = gr.Markdown(
+                label="Revised Report", buttons=["copy"]
+            )
+            revised_download_btn = gr.DownloadButton(
+                "Download Report (.md)", visible=False, variant="secondary"
+            )
 
         with gr.Tab("History"):
             refresh_btn = gr.Button("Refresh")
@@ -136,6 +157,7 @@ def create_ui() -> gr.Blocks:
                     run_id_output: "",
                     report_output: "",
                     cost_output: "",
+                    download_btn: gr.DownloadButton(visible=False),
                 }
                 return
 
@@ -178,13 +200,18 @@ def create_ui() -> gr.Blocks:
                     on_status=on_status,
                 )
 
+                report_text = (
+                    run.report_markdown or accumulated_text or "No report generated"
+                )
+                download_path = prepare_download(run.report_markdown, run.run_id)
                 yield {
                     status_output: run.status.value,
                     run_id_output: run.run_id,
-                    report_output: run.report_markdown
-                    or accumulated_text
-                    or "No report generated",
+                    report_output: report_text,
                     cost_output: calculate_cost(run.usage),
+                    download_btn: gr.DownloadButton(
+                        value=download_path, visible=download_path is not None
+                    ),
                 }
 
             except Exception as e:
@@ -193,6 +220,7 @@ def create_ui() -> gr.Blocks:
                     run_id_output: current_run_id,
                     report_output: accumulated_text or "",
                     cost_output: "",
+                    download_btn: gr.DownloadButton(visible=False),
                 }
 
         def load_run_for_revision(run_id: str) -> dict:
@@ -220,6 +248,7 @@ def create_ui() -> gr.Blocks:
                     revised_status: "Error: Please enter a Run ID",
                     revised_report_output: "",
                     revised_cost_output: "",
+                    revised_download_btn: gr.DownloadButton(visible=False),
                 }
                 return
 
@@ -228,6 +257,7 @@ def create_ui() -> gr.Blocks:
                     revised_status: "Error: Please enter feedback",
                     revised_report_output: "",
                     revised_cost_output: "",
+                    revised_download_btn: gr.DownloadButton(visible=False),
                 }
                 return
 
@@ -247,12 +277,17 @@ def create_ui() -> gr.Blocks:
                     on_event=on_event,
                 )
 
+                report_text = run.report_markdown or accumulated_text or "No report"
+                download_path = prepare_download(
+                    run.report_markdown, f"{run.run_id}_v{run.version}"
+                )
                 yield {
                     revised_status: run.status.value,
-                    revised_report_output: run.report_markdown
-                    or accumulated_text
-                    or "No report",
+                    revised_report_output: report_text,
                     revised_cost_output: calculate_cost(run.usage),
+                    revised_download_btn: gr.DownloadButton(
+                        value=download_path, visible=download_path is not None
+                    ),
                 }
 
             except ValueError as e:
@@ -260,12 +295,14 @@ def create_ui() -> gr.Blocks:
                     revised_status: f"Error: {e}",
                     revised_report_output: "",
                     revised_cost_output: "",
+                    revised_download_btn: gr.DownloadButton(visible=False),
                 }
             except Exception as e:
                 yield {
                     revised_status: f"Error: {e}",
                     revised_report_output: accumulated_text or "",
                     revised_cost_output: "",
+                    revised_download_btn: gr.DownloadButton(visible=False),
                 }
 
         def refresh_runs() -> list[list]:
@@ -292,7 +329,13 @@ def create_ui() -> gr.Blocks:
                 max_words_input,
                 focus_input,
             ],
-            outputs=[status_output, run_id_output, report_output, cost_output],
+            outputs=[
+                status_output,
+                run_id_output,
+                report_output,
+                cost_output,
+                download_btn,
+            ],
         )
 
         load_btn.click(
@@ -304,7 +347,12 @@ def create_ui() -> gr.Blocks:
         revise_btn.click(
             fn=do_revision,
             inputs=[revise_run_id, feedback_input],
-            outputs=[revised_status, revised_report_output, revised_cost_output],
+            outputs=[
+                revised_status,
+                revised_report_output,
+                revised_cost_output,
+                revised_download_btn,
+            ],
         )
 
         refresh_btn.click(
