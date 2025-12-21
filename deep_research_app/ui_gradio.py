@@ -199,11 +199,19 @@ def create_ui() -> gr.Blocks:
             )
 
         with gr.Tab("History"):
+            gr.Markdown("Click a row to select, then click 'Load Selected Run'")
             refresh_btn = gr.Button("Refresh")
             runs_table = gr.Dataframe(
                 headers=["Run ID", "Topic", "Version", "Created"],
                 interactive=False,
             )
+            selected_run_id_state = gr.State("")
+            selected_run_display = gr.Textbox(
+                label="Selected Run",
+                interactive=False,
+                value="No run selected",
+            )
+            load_selected_btn = gr.Button("Load Selected Run", variant="primary")
 
         # Event handlers
         def load_run(run_id: str) -> dict:
@@ -385,6 +393,31 @@ def create_ui() -> gr.Blocks:
                 for r in runs
             ]
 
+        def on_row_select(evt: gr.SelectData) -> dict:
+            """Handle row selection in history table."""
+            if evt.index is not None and evt.value:
+                # evt.index is [row, col], we want row 0 column (Run ID)
+                # But evt.value is the selected cell value
+                # We need to get the Run ID from the row
+                run_id = str(evt.row_value[0]) if evt.row_value else ""
+                return {
+                    selected_run_id_state: run_id,
+                    selected_run_display: f"Selected: {run_id}",
+                }
+            return {
+                selected_run_id_state: "",
+                selected_run_display: "No run selected",
+            }
+
+        def load_selected_run(selected_run_id: str) -> dict:
+            """Load the selected run from history."""
+            if not selected_run_id:
+                return {
+                    mode_indicator: "Error: No run selected",
+                    mode_state: "NEW",
+                }
+            return load_run(selected_run_id)
+
         # Wire up events
         load_btn.click(
             fn=load_run,
@@ -458,6 +491,34 @@ def create_ui() -> gr.Blocks:
         refresh_btn.click(
             fn=refresh_runs,
             outputs=[runs_table],
+        )
+
+        runs_table.select(
+            fn=on_row_select,
+            outputs=[selected_run_id_state, selected_run_display],
+        )
+
+        load_selected_btn.click(
+            fn=load_selected_run,
+            inputs=[selected_run_id_state],
+            outputs=[
+                mode_state,
+                loaded_run_id_state,
+                mode_indicator,
+                topic_input,
+                timeframe_input,
+                region_input,
+                depth_dropdown,
+                max_words_input,
+                focus_input,
+                current_report_display,
+                feedback_input,
+                action_btn,
+                report_output,
+                status_output,
+                cost_output,
+                download_btn,
+            ],
         )
 
     return demo
