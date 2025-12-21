@@ -6,6 +6,13 @@ from functools import lru_cache
 from pydantic import ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Deep Research uses Gemini 3 Pro internally
+# See: https://ai.google.dev/gemini-api/docs/deep-research
+# Pricing per 1M tokens (as of Dec 2024)
+PRICE_PER_M_INPUT = 2.0  # $2 per 1M input tokens
+PRICE_PER_M_OUTPUT = 12.0  # $12 per 1M output tokens
+# FIXME: Verify current rates and update if changed
+
 
 class ConfigurationError(Exception):
     """Raised when required configuration is missing or invalid."""

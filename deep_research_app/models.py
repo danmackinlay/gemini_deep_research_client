@@ -27,6 +27,36 @@ class UsageMetadata:
     total_tokens: int = 0
     thinking_tokens: int = 0
 
+    def calculate_cost(
+        self,
+        price_per_m_input: float = 2.0,
+        price_per_m_output: float = 12.0,
+    ) -> float:
+        """Calculate cost in dollars based on token usage."""
+        return (self.prompt_tokens / 1_000_000) * price_per_m_input + (
+            self.output_tokens / 1_000_000
+        ) * price_per_m_output
+
+    def format_cost(self, include_total: bool = True) -> str:
+        """Format usage with cost for display."""
+        cost = self.calculate_cost()
+        if include_total:
+            return (
+                f"Tokens: {self.prompt_tokens:,} in / {self.output_tokens:,} out / "
+                f"{self.total_tokens:,} total | Cost: ${cost:.4f}"
+            )
+        return f"{self.prompt_tokens:,} in / {self.output_tokens:,} out | ${cost:.4f}"
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "UsageMetadata":
+        """Create UsageMetadata from a dict (e.g., from meta.json)."""
+        return cls(
+            prompt_tokens=data.get("prompt_tokens", 0),
+            output_tokens=data.get("output_tokens", 0),
+            total_tokens=data.get("total_tokens", 0),
+            thinking_tokens=data.get("thinking_tokens", 0),
+        )
+
 
 @dataclass
 class StreamState:

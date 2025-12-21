@@ -1,5 +1,6 @@
 """High-level research orchestration with prompt templates."""
 
+import re
 from dataclasses import dataclass
 from typing import Optional, Callable
 
@@ -81,6 +82,63 @@ Please produce a complete revised Markdown report that:
 
 Output only the revised report in Markdown format.
 """
+
+
+def parse_prompt(prompt_text: str) -> dict:
+    """Extract structured fields from stored prompt text.
+
+    The prompt follows the INITIAL_RESEARCH_TEMPLATE format with sections like:
+    ## Research Topic
+    ## Research Questions
+    ## Constraints
+    """
+    result: dict = {
+        "topic": "",
+        "timeframe": None,
+        "region": None,
+        "depth": "comprehensive",
+        "max_words": None,
+        "focus_areas": None,
+    }
+
+    # Extract topic between "## Research Topic" and "## Research Questions"
+    topic_match = re.search(
+        r"## Research Topic\s*\n(.*?)(?=\n## Research Questions|\n## Constraints|$)",
+        prompt_text,
+        re.DOTALL,
+    )
+    if topic_match:
+        result["topic"] = topic_match.group(1).strip()
+
+    # Extract constraints section
+    constraints_match = re.search(
+        r"## Constraints\s*\n(.*?)(?=\n## Output Format|$)", prompt_text, re.DOTALL
+    )
+    if constraints_match:
+        constraints_text = constraints_match.group(1)
+
+        # Parse individual constraints
+        timeframe_match = re.search(r"Time period:\s*(.+)", constraints_text)
+        if timeframe_match:
+            result["timeframe"] = timeframe_match.group(1).strip()
+
+        region_match = re.search(r"Geographic focus:\s*(.+)", constraints_text)
+        if region_match:
+            result["region"] = region_match.group(1).strip()
+
+        depth_match = re.search(r"Depth:\s*(.+)", constraints_text)
+        if depth_match:
+            result["depth"] = depth_match.group(1).strip()
+
+        max_words_match = re.search(r"Maximum length:\s*(\d+)", constraints_text)
+        if max_words_match:
+            result["max_words"] = int(max_words_match.group(1))
+
+        focus_match = re.search(r"Focus areas:\s*(.+)", constraints_text)
+        if focus_match:
+            result["focus_areas"] = focus_match.group(1).strip()
+
+    return result
 
 
 @dataclass

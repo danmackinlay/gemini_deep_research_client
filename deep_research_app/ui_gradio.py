@@ -6,28 +6,13 @@ from typing import Generator
 
 import gradio as gr
 
-from deep_research_app.workflow import ResearchWorkflow, ResearchConstraints
+from deep_research_app.workflow import (
+    ResearchWorkflow,
+    ResearchConstraints,
+    parse_prompt,
+)
 from deep_research_app.storage import RunStorage
-from deep_research_app.models import InteractionStatus, UsageMetadata
-
-# Deep Research uses Gemini 3 Pro internally
-# See: https://ai.google.dev/gemini-api/docs/deep-research
-# Pricing per 1M tokens (as of Dec 2024)
-PRICE_PER_M_INPUT = 2.0  # $2 per 1M input tokens
-PRICE_PER_M_OUTPUT = 12.0  # $12 per 1M output tokens
-# FIXME: Verify current rates and update if changed
-
-
-def calculate_cost(usage: UsageMetadata | None) -> str:
-    """Calculate cost in dollars from token usage and format for display."""
-    if not usage:
-        return ""
-    input_cost = (usage.prompt_tokens / 1_000_000) * PRICE_PER_M_INPUT
-    output_cost = (usage.output_tokens / 1_000_000) * PRICE_PER_M_OUTPUT
-    total_cost = input_cost + output_cost
-    return (
-        f"{usage.prompt_tokens:,} in / {usage.output_tokens:,} out | ${total_cost:.4f}"
-    )
+from deep_research_app.models import InteractionStatus
 
 
 def prepare_download(report_text: str | None, run_id: str) -> str | None:
@@ -37,65 +22,6 @@ def prepare_download(report_text: str | None, run_id: str) -> str | None:
     path = Path(gettempdir()) / f"{run_id}_report.md"
     path.write_text(report_text, encoding="utf-8")
     return str(path)
-
-
-def parse_prompt(prompt_text: str) -> dict:
-    """Extract structured fields from stored prompt text.
-
-    The prompt follows the INITIAL_RESEARCH_TEMPLATE format with sections like:
-    ## Research Topic
-    ## Research Questions
-    ## Constraints
-    """
-    result = {
-        "topic": "",
-        "timeframe": None,
-        "region": None,
-        "depth": "comprehensive",
-        "max_words": None,
-        "focus_areas": None,
-    }
-
-    # Extract topic between "## Research Topic" and "## Research Questions"
-    import re
-
-    topic_match = re.search(
-        r"## Research Topic\s*\n(.*?)(?=\n## Research Questions|\n## Constraints|$)",
-        prompt_text,
-        re.DOTALL,
-    )
-    if topic_match:
-        result["topic"] = topic_match.group(1).strip()
-
-    # Extract constraints section
-    constraints_match = re.search(
-        r"## Constraints\s*\n(.*?)(?=\n## Output Format|$)", prompt_text, re.DOTALL
-    )
-    if constraints_match:
-        constraints_text = constraints_match.group(1)
-
-        # Parse individual constraints
-        timeframe_match = re.search(r"Time period:\s*(.+)", constraints_text)
-        if timeframe_match:
-            result["timeframe"] = timeframe_match.group(1).strip()
-
-        region_match = re.search(r"Geographic focus:\s*(.+)", constraints_text)
-        if region_match:
-            result["region"] = region_match.group(1).strip()
-
-        depth_match = re.search(r"Depth:\s*(.+)", constraints_text)
-        if depth_match:
-            result["depth"] = depth_match.group(1).strip()
-
-        max_words_match = re.search(r"Maximum length:\s*(\d+)", constraints_text)
-        if max_words_match:
-            result["max_words"] = int(max_words_match.group(1))
-
-        focus_match = re.search(r"Focus areas:\s*(.+)", constraints_text)
-        if focus_match:
-            result["focus_areas"] = focus_match.group(1).strip()
-
-    return result
 
 
 def create_ui() -> gr.Blocks:
@@ -365,7 +291,9 @@ def create_ui() -> gr.Blocks:
                     status_output: run.status.value,
                     run_id_output: run.run_id,
                     report_output: report_text,
-                    cost_output: calculate_cost(run.usage),
+                    cost_output: run.usage.format_cost(include_total=False)
+                    if run.usage
+                    else "",
                     download_btn: gr.DownloadButton(
                         value=download_path, visible=download_path is not None
                     ),
