@@ -67,12 +67,6 @@ def new_research(
         "-w",
         help="Maximum report length in words",
     ),
-    depth: str = typer.Option(
-        "comprehensive",
-        "--depth",
-        "-d",
-        help="Research depth: brief, moderate, comprehensive",
-    ),
     focus: Optional[str] = typer.Option(
         None,
         "--focus",
@@ -90,7 +84,6 @@ def new_research(
     constraints = ResearchConstraints(
         timeframe=timeframe,
         region=region,
-        depth=depth,
         max_words=max_words,
         focus_areas=focus.split(",") if focus else None,
     )

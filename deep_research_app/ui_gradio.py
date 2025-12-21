@@ -71,16 +71,10 @@ def create_ui() -> gr.Blocks:
                     placeholder="e.g., United States",
                 )
 
-            with gr.Row():
-                depth_dropdown = gr.Dropdown(
-                    choices=["brief", "moderate", "comprehensive"],
-                    value="comprehensive",
-                    label="Research Depth",
-                )
-                max_words_input = gr.Number(
-                    label="Max Words (optional)",
-                    value=None,
-                )
+            max_words_input = gr.Number(
+                label="Max Words (optional)",
+                value=None,
+            )
 
             focus_input = gr.Textbox(
                 label="Focus Areas (comma-separated)",
@@ -171,7 +165,6 @@ def create_ui() -> gr.Blocks:
                 topic_input: parsed["topic"],
                 timeframe_input: parsed["timeframe"] or "",
                 region_input: parsed["region"] or "",
-                depth_dropdown: parsed["depth"],
                 max_words_input: parsed["max_words"],
                 focus_input: parsed["focus_areas"] or "",
                 current_report_display: gr.Markdown(
@@ -194,7 +187,6 @@ def create_ui() -> gr.Blocks:
                 topic_input: "",
                 timeframe_input: "",
                 region_input: "",
-                depth_dropdown: "comprehensive",
                 max_words_input: None,
                 focus_input: "",
                 current_report_display: gr.Markdown(visible=False),
@@ -214,7 +206,6 @@ def create_ui() -> gr.Blocks:
             topic: str,
             timeframe: str,
             region: str,
-            depth: str,
             max_words: float | None,
             focus: str,
             feedback: str,
@@ -235,7 +226,6 @@ def create_ui() -> gr.Blocks:
             constraints = ResearchConstraints(
                 timeframe=timeframe.strip() or None,
                 region=region.strip() or None,
-                depth=depth,
                 max_words=int(max_words) if max_words else None,
                 focus_areas=[a.strip() for a in focus.split(",") if a.strip()] or None,
             )
@@ -357,7 +347,6 @@ def create_ui() -> gr.Blocks:
                 topic_input,
                 timeframe_input,
                 region_input,
-                depth_dropdown,
                 max_words_input,
                 focus_input,
                 current_report_display,
@@ -379,7 +368,6 @@ def create_ui() -> gr.Blocks:
                 topic_input,
                 timeframe_input,
                 region_input,
-                depth_dropdown,
                 max_words_input,
                 focus_input,
                 current_report_display,
@@ -402,7 +390,6 @@ def create_ui() -> gr.Blocks:
                 topic_input,
                 timeframe_input,
                 region_input,
-                depth_dropdown,
                 max_words_input,
                 focus_input,
                 feedback_input,
@@ -436,7 +423,6 @@ def create_ui() -> gr.Blocks:
                 topic_input,
                 timeframe_input,
                 region_input,
-                depth_dropdown,
                 max_words_input,
                 focus_input,
                 current_report_display,

@@ -10,7 +10,7 @@ uv sync
 
 # Run CLI
 uv run deep-research --help
-uv run deep-research new "Research topic" --timeframe "2020-2024" --depth comprehensive
+uv run deep-research new "Research topic" --timeframe "2020-2024"
 uv run deep-research list
 uv run deep-research show <RUN_ID>
 uv run deep-research revise <RUN_ID> --feedback "Add more detail on X"

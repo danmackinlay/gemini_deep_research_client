@@ -96,7 +96,6 @@ def parse_prompt(prompt_text: str) -> dict:
         "topic": "",
         "timeframe": None,
         "region": None,
-        "depth": "comprehensive",
         "max_words": None,
         "focus_areas": None,
     }
@@ -126,10 +125,6 @@ def parse_prompt(prompt_text: str) -> dict:
         if region_match:
             result["region"] = region_match.group(1).strip()
 
-        depth_match = re.search(r"Depth:\s*(.+)", constraints_text)
-        if depth_match:
-            result["depth"] = depth_match.group(1).strip()
-
         max_words_match = re.search(r"Maximum length:\s*(\d+)", constraints_text)
         if max_words_match:
             result["max_words"] = int(max_words_match.group(1))
@@ -147,7 +142,6 @@ class ResearchConstraints:
 
     timeframe: Optional[str] = None
     region: Optional[str] = None
-    depth: str = "comprehensive"
     max_words: Optional[int] = None
     focus_areas: Optional[list[str]] = None
 
@@ -387,7 +381,6 @@ class ResearchWorkflow:
             parts.append(f"- Maximum length: {constraints.max_words} words")
         if constraints.focus_areas:
             parts.append(f"- Focus areas: {', '.join(constraints.focus_areas)}")
-        parts.append(f"- Depth: {constraints.depth}")
         return "\n".join(parts) if parts else "None specified"
 
     def _build_initial_prompt(

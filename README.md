@@ -36,7 +36,7 @@ direnv allow
 
 ```bash
 # Start a new research run
-uv run deep-research new "Impact of AI on healthcare" --timeframe "2020-2024" --depth comprehensive
+uv run deep-research new "Impact of AI on healthcare" --timeframe "2020-2024"
 
 # List all research runs
 uv run deep-research list
@@ -60,7 +60,6 @@ uv run deep-research resume <RUN_ID>
 uv run deep-research new "topic" \
   --timeframe "2020-2024" \    # Time period constraint
   --region "United States" \   # Geographic focus
-  --depth comprehensive \      # brief, moderate, or comprehensive
   --max-words 5000 \           # Maximum report length
   --focus "economics,policy"   # Comma-separated focus areas
 
