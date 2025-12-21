@@ -266,10 +266,13 @@ def check_status(
     """
     client = DeepResearchClient()
 
-    status, text = client.get_interaction_status(interaction_id)
+    status, text, usage = client.get_interaction_status(interaction_id)
 
     console.print(f"[bold]Interaction:[/bold] {interaction_id}")
     console.print(f"[bold]Status:[/bold] {status.value}")
+
+    if usage:
+        console.print(f"[dim]{usage.format_cost()}[/dim]")
 
     if status == InteractionStatus.COMPLETED and text:
         console.print(f"\n[green]Report is ready ({len(text)} characters)[/green]")

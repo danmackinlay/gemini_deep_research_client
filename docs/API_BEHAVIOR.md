@@ -32,7 +32,7 @@ result = client.poll_interaction(interaction_id)
 # Result contains:
 #   - status: completed/failed/cancelled
 #   - final_markdown: the report text
-#   - usage: token counts for billing
+#   - usage: None (see "Usage Metadata" section below)
 ```
 
 ## API Behavior
@@ -65,13 +65,20 @@ When `completed`, the full text is available in `interaction.outputs[-1].text`.
 
 ### Usage Metadata
 
-Available on completed interaction via `interaction.usage`:
-- `total_input_tokens`
-- `total_output_tokens`
-- `total_tokens`
-- `total_reasoning_tokens`
+**Known Limitation (December 2024)**: The Deep Research agent does NOT return usage/billing data.
 
-Note: Usage data may occasionally be missing in polling responses.
+The Interactions API schema defines `interaction.usage` with fields like `total_input_tokens`, `total_output_tokens`, etc. However, the Deep Research agent (`deep-research-pro-preview-12-2025`) does not populate this field.
+
+**Confirmed via raw REST**:
+```
+GET /v1beta/interactions/{id}
+Response keys: ['agent', 'created', 'id', 'object', 'outputs', 'role', 'status', 'updated']
+# Note: 'usage' is NOT in the response
+```
+
+The SDK emits a warning: "Interactions usage is experimental and may change in future versions."
+
+This is a server-side limitation. Token usage for Deep Research runs is only visible in Google Cloud billing, not via the API.
 
 ## Historical: Streaming Behavior
 

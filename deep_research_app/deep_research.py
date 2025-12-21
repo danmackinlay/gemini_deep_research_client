@@ -47,6 +47,23 @@ class DeepResearchClient:
         self._agent = settings.agent_name
         self._thinking_summaries = settings.thinking_summaries
 
+    def _extract_usage(self, interaction) -> Optional[UsageMetadata]:
+        """Extract UsageMetadata from an interaction object.
+
+        The API may delay populating the usage field even after marking
+        an interaction as completed. This helper centralizes the extraction
+        logic for use in both polling and status checks.
+        """
+        if not hasattr(interaction, "usage") or not interaction.usage:
+            return None
+        u = interaction.usage
+        return UsageMetadata(
+            prompt_tokens=getattr(u, "total_input_tokens", 0) or 0,
+            output_tokens=getattr(u, "total_output_tokens", 0) or 0,
+            total_tokens=getattr(u, "total_tokens", 0) or 0,
+            thinking_tokens=getattr(u, "total_reasoning_tokens", 0) or 0,
+        )
+
     def create_interaction(
         self,
         prompt: str,
@@ -164,16 +181,9 @@ class DeepResearchClient:
                     if interaction.outputs:
                         final_text = interaction.outputs[-1].text
 
-                    # Capture usage from completed interaction
-                    usage = None
-                    if hasattr(interaction, "usage") and interaction.usage:
-                        u = interaction.usage
-                        usage = UsageMetadata(
-                            prompt_tokens=u.total_input_tokens,
-                            output_tokens=u.total_output_tokens,
-                            total_tokens=u.total_tokens,
-                            thinking_tokens=u.total_reasoning_tokens,
-                        )
+                    # Extract usage if available
+                    # Note: Deep Research agent does not currently return usage data
+                    usage = self._extract_usage(interaction)
 
                     return PollResult(
                         interaction_id=interaction_id,
@@ -214,17 +224,18 @@ class DeepResearchClient:
 
     def get_interaction_status(
         self, interaction_id: str
-    ) -> tuple[InteractionStatus, Optional[str]]:
+    ) -> tuple[InteractionStatus, Optional[str], Optional[UsageMetadata]]:
         """
         Get current status of an interaction (single poll).
 
-        Returns (status, final_text_if_complete)
+        Returns (status, final_text_if_complete, usage_if_available)
         """
         interaction = self._client.interactions.get(interaction_id)
         status_str = interaction.status
 
         status_map = {
             "pending": InteractionStatus.PENDING,
+            "in_progress": InteractionStatus.RUNNING,  # API uses this
             "running": InteractionStatus.RUNNING,
             "completed": InteractionStatus.COMPLETED,
             "failed": InteractionStatus.FAILED,
@@ -236,4 +247,6 @@ class DeepResearchClient:
         if status == InteractionStatus.COMPLETED and interaction.outputs:
             final_text = interaction.outputs[-1].text
 
-        return status, final_text
+        usage = self._extract_usage(interaction)
+
+        return status, final_text, usage
