@@ -39,6 +39,65 @@ def prepare_download(report_text: str | None, run_id: str) -> str | None:
     return str(path)
 
 
+def parse_prompt(prompt_text: str) -> dict:
+    """Extract structured fields from stored prompt text.
+
+    The prompt follows the INITIAL_RESEARCH_TEMPLATE format with sections like:
+    ## Research Topic
+    ## Research Questions
+    ## Constraints
+    """
+    result = {
+        "topic": "",
+        "timeframe": None,
+        "region": None,
+        "depth": "comprehensive",
+        "max_words": None,
+        "focus_areas": None,
+    }
+
+    # Extract topic between "## Research Topic" and "## Research Questions"
+    import re
+
+    topic_match = re.search(
+        r"## Research Topic\s*\n(.*?)(?=\n## Research Questions|\n## Constraints|$)",
+        prompt_text,
+        re.DOTALL,
+    )
+    if topic_match:
+        result["topic"] = topic_match.group(1).strip()
+
+    # Extract constraints section
+    constraints_match = re.search(
+        r"## Constraints\s*\n(.*?)(?=\n## Output Format|$)", prompt_text, re.DOTALL
+    )
+    if constraints_match:
+        constraints_text = constraints_match.group(1)
+
+        # Parse individual constraints
+        timeframe_match = re.search(r"Time period:\s*(.+)", constraints_text)
+        if timeframe_match:
+            result["timeframe"] = timeframe_match.group(1).strip()
+
+        region_match = re.search(r"Geographic focus:\s*(.+)", constraints_text)
+        if region_match:
+            result["region"] = region_match.group(1).strip()
+
+        depth_match = re.search(r"Depth:\s*(.+)", constraints_text)
+        if depth_match:
+            result["depth"] = depth_match.group(1).strip()
+
+        max_words_match = re.search(r"Maximum length:\s*(\d+)", constraints_text)
+        if max_words_match:
+            result["max_words"] = int(max_words_match.group(1))
+
+        focus_match = re.search(r"Focus areas:\s*(.+)", constraints_text)
+        if focus_match:
+            result["focus_areas"] = focus_match.group(1).strip()
+
+    return result
+
+
 def create_ui() -> gr.Blocks:
     """Create the Gradio web interface."""
     storage = RunStorage()
@@ -46,7 +105,30 @@ def create_ui() -> gr.Blocks:
     with gr.Blocks(title="Gemini Deep Research") as demo:
         gr.Markdown("# Gemini Deep Research Client")
 
-        with gr.Tab("New Research"):
+        # State for tracking mode and loaded run
+        mode_state = gr.State("NEW")  # "NEW" or "REVISION"
+        loaded_run_id_state = gr.State("")
+
+        with gr.Tab("Research"):
+            # Mode controls at top
+            with gr.Row():
+                run_id_input = gr.Textbox(
+                    label="Run ID",
+                    placeholder="Enter run ID to load for revision...",
+                    scale=2,
+                )
+                load_btn = gr.Button("Load Run", scale=1)
+                new_btn = gr.Button("New Research", variant="secondary", scale=1)
+
+            # Mode indicator
+            mode_indicator = gr.Textbox(
+                value="Mode: New Research",
+                label="",
+                interactive=False,
+                container=False,
+            )
+
+            # Research parameters
             topic_input = gr.Textbox(
                 label="Research Topic",
                 placeholder="Enter your research topic or question...",
@@ -79,8 +161,23 @@ def create_ui() -> gr.Blocks:
                 placeholder="e.g., economics, policy, technology",
             )
 
-            start_btn = gr.Button("Start Research", variant="primary")
+            # Current report (shown in revision mode)
+            current_report_display = gr.Markdown(
+                label="Current Report", buttons=["copy"], visible=False
+            )
 
+            # Feedback (only shown in revision mode)
+            feedback_input = gr.Textbox(
+                label="Revision Feedback",
+                placeholder="Describe what changes you want...",
+                lines=3,
+                visible=False,
+            )
+
+            # Action button - label changes based on mode
+            action_btn = gr.Button("Start Research", variant="primary")
+
+            # Status outputs
             with gr.Row():
                 status_output = gr.Textbox(
                     label="Status",
@@ -95,42 +192,9 @@ def create_ui() -> gr.Blocks:
                     interactive=False,
                 )
 
+            # Report output
             report_output = gr.Markdown(label="Research Report", buttons=["copy"])
             download_btn = gr.DownloadButton(
-                "Download Report (.md)", visible=False, variant="secondary"
-            )
-
-            thoughts_output = gr.Textbox(
-                label="Thinking Summaries",
-                lines=5,
-                interactive=False,
-                visible=False,
-            )
-
-        with gr.Tab("Revise"):
-            revise_run_id = gr.Textbox(label="Run ID to Revise")
-            load_btn = gr.Button("Load Run")
-
-            current_report_display = gr.Markdown(
-                label="Current Report", buttons=["copy"]
-            )
-
-            feedback_input = gr.Textbox(
-                label="Feedback",
-                placeholder="Describe what changes you want...",
-                lines=3,
-            )
-
-            revise_btn = gr.Button("Revise Report", variant="primary")
-            with gr.Row():
-                revised_status = gr.Textbox(label="Revision Status", interactive=False)
-                revised_cost_output = gr.Textbox(
-                    label="Usage & Cost", interactive=False
-                )
-            revised_report_output = gr.Markdown(
-                label="Revised Report", buttons=["copy"]
-            )
-            revised_download_btn = gr.DownloadButton(
                 "Download Report (.md)", visible=False, variant="secondary"
             )
 
@@ -142,15 +206,86 @@ def create_ui() -> gr.Blocks:
             )
 
         # Event handlers
-        def run_research(
+        def load_run(run_id: str) -> dict:
+            """Load a run for revision, populating all fields."""
+            if not run_id.strip():
+                return {
+                    mode_indicator: "Error: Please enter a Run ID",
+                    mode_state: "NEW",
+                }
+
+            run = storage.load_latest_run(run_id.strip())
+            if not run:
+                return {
+                    mode_indicator: f"Error: Run not found: {run_id}",
+                    mode_state: "NEW",
+                }
+
+            if run.status != InteractionStatus.COMPLETED:
+                return {
+                    mode_indicator: f"Error: Cannot revise - run status is {run.status}",
+                    mode_state: "NEW",
+                }
+
+            # Parse the original prompt to extract fields
+            parsed = parse_prompt(run.prompt_text)
+
+            return {
+                mode_state: "REVISION",
+                loaded_run_id_state: run_id.strip(),
+                mode_indicator: f"Mode: Revising run {run_id.strip()} (v{run.version})",
+                topic_input: parsed["topic"],
+                timeframe_input: parsed["timeframe"] or "",
+                region_input: parsed["region"] or "",
+                depth_dropdown: parsed["depth"],
+                max_words_input: parsed["max_words"],
+                focus_input: parsed["focus_areas"] or "",
+                current_report_display: gr.Markdown(
+                    value=run.report_markdown or "No report available", visible=True
+                ),
+                feedback_input: gr.Textbox(visible=True),
+                action_btn: gr.Button(value="Revise Report"),
+                report_output: "",
+                status_output: "",
+                cost_output: "",
+                download_btn: gr.DownloadButton(visible=False),
+            }
+
+        def reset_to_new() -> dict:
+            """Reset the UI to new research mode."""
+            return {
+                mode_state: "NEW",
+                loaded_run_id_state: "",
+                mode_indicator: "Mode: New Research",
+                topic_input: "",
+                timeframe_input: "",
+                region_input: "",
+                depth_dropdown: "comprehensive",
+                max_words_input: None,
+                focus_input: "",
+                current_report_display: gr.Markdown(visible=False),
+                feedback_input: gr.Textbox(visible=False),
+                action_btn: gr.Button(value="Start Research"),
+                run_id_input: "",
+                report_output: "",
+                status_output: "",
+                run_id_output: "",
+                cost_output: "",
+                download_btn: gr.DownloadButton(visible=False),
+            }
+
+        def do_research(
+            mode: str,
+            loaded_run_id: str,
             topic: str,
             timeframe: str,
             region: str,
             depth: str,
             max_words: float | None,
             focus: str,
+            feedback: str,
         ) -> Generator:
-            """Run research and yield updates."""
+            """Run new research or revision based on mode."""
             if not topic.strip():
                 yield {
                     status_output: "Error: Please enter a topic",
@@ -168,42 +303,56 @@ def create_ui() -> gr.Blocks:
                 region=region.strip() or None,
                 depth=depth,
                 max_words=int(max_words) if max_words else None,
-                focus_areas=focus.strip().split(",") if focus.strip() else None,
+                focus_areas=[a.strip() for a in focus.split(",") if a.strip()] or None,
             )
 
             accumulated_text = ""
-            thoughts: list[str] = []
             current_run_id = ""
-            current_status = "Starting..."
 
             def on_event(event_type: str, text: str) -> None:
-                nonlocal accumulated_text, current_run_id, current_status
+                nonlocal accumulated_text, current_run_id
                 if event_type == "start" and "Interaction started:" in text:
                     current_run_id = text.split(": ")[1]
-                    current_status = "Running..."
                 elif event_type == "text":
                     accumulated_text += text
-                elif event_type == "thought":
-                    thoughts.append(text)
-                elif event_type == "complete":
-                    current_status = "Complete!"
 
             def on_status(status: str) -> None:
-                nonlocal current_status
-                current_status = status
+                pass  # Could update status in real-time if needed
 
             try:
-                run = workflow.run_initial_research(
-                    topic=topic,
-                    constraints=constraints,
-                    on_event=on_event,
-                    on_status=on_status,
-                )
+                if mode == "REVISION" and loaded_run_id:
+                    # Revision mode - need feedback
+                    if not feedback.strip():
+                        yield {
+                            status_output: "Error: Please enter revision feedback",
+                            run_id_output: "",
+                            report_output: "",
+                            cost_output: "",
+                            download_btn: gr.DownloadButton(visible=False),
+                        }
+                        return
+
+                    run = workflow.revise_research(
+                        run_id=loaded_run_id,
+                        feedback=feedback.strip(),
+                        constraints=constraints,
+                        on_event=on_event,
+                    )
+                else:
+                    # New research mode
+                    run = workflow.run_initial_research(
+                        topic=topic,
+                        constraints=constraints,
+                        on_event=on_event,
+                        on_status=on_status,
+                    )
 
                 report_text = (
                     run.report_markdown or accumulated_text or "No report generated"
                 )
-                download_path = prepare_download(run.report_markdown, run.run_id)
+                download_path = prepare_download(
+                    run.report_markdown, f"{run.run_id}_v{run.version}"
+                )
                 yield {
                     status_output: run.status.value,
                     run_id_output: run.run_id,
@@ -223,88 +372,6 @@ def create_ui() -> gr.Blocks:
                     download_btn: gr.DownloadButton(visible=False),
                 }
 
-        def load_run_for_revision(run_id: str) -> dict:
-            """Load a run for revision."""
-            if not run_id.strip():
-                return {current_report_display: "Please enter a Run ID"}
-
-            run = storage.load_latest_run(run_id.strip())
-            if not run:
-                return {current_report_display: f"Run not found: {run_id}"}
-
-            if run.status != InteractionStatus.COMPLETED:
-                return {
-                    current_report_display: f"Cannot revise: run status is {run.status}"
-                }
-
-            return {
-                current_report_display: run.report_markdown or "No report available"
-            }
-
-        def do_revision(run_id: str, feedback: str) -> Generator:
-            """Perform a revision."""
-            if not run_id.strip():
-                yield {
-                    revised_status: "Error: Please enter a Run ID",
-                    revised_report_output: "",
-                    revised_cost_output: "",
-                    revised_download_btn: gr.DownloadButton(visible=False),
-                }
-                return
-
-            if not feedback.strip():
-                yield {
-                    revised_status: "Error: Please enter feedback",
-                    revised_report_output: "",
-                    revised_cost_output: "",
-                    revised_download_btn: gr.DownloadButton(visible=False),
-                }
-                return
-
-            workflow = ResearchWorkflow()
-
-            accumulated_text = ""
-
-            def on_event(event_type: str, text: str) -> None:
-                nonlocal accumulated_text
-                if event_type == "text":
-                    accumulated_text += text
-
-            try:
-                run = workflow.revise_research(
-                    run_id=run_id.strip(),
-                    feedback=feedback.strip(),
-                    on_event=on_event,
-                )
-
-                report_text = run.report_markdown or accumulated_text or "No report"
-                download_path = prepare_download(
-                    run.report_markdown, f"{run.run_id}_v{run.version}"
-                )
-                yield {
-                    revised_status: run.status.value,
-                    revised_report_output: report_text,
-                    revised_cost_output: calculate_cost(run.usage),
-                    revised_download_btn: gr.DownloadButton(
-                        value=download_path, visible=download_path is not None
-                    ),
-                }
-
-            except ValueError as e:
-                yield {
-                    revised_status: f"Error: {e}",
-                    revised_report_output: "",
-                    revised_cost_output: "",
-                    revised_download_btn: gr.DownloadButton(visible=False),
-                }
-            except Exception as e:
-                yield {
-                    revised_status: f"Error: {e}",
-                    revised_report_output: accumulated_text or "",
-                    revised_cost_output: "",
-                    revised_download_btn: gr.DownloadButton(visible=False),
-                }
-
         def refresh_runs() -> list[list]:
             """Refresh the runs table."""
             runs = storage.list_runs()
@@ -319,15 +386,65 @@ def create_ui() -> gr.Blocks:
             ]
 
         # Wire up events
-        start_btn.click(
-            fn=run_research,
-            inputs=[
+        load_btn.click(
+            fn=load_run,
+            inputs=[run_id_input],
+            outputs=[
+                mode_state,
+                loaded_run_id_state,
+                mode_indicator,
                 topic_input,
                 timeframe_input,
                 region_input,
                 depth_dropdown,
                 max_words_input,
                 focus_input,
+                current_report_display,
+                feedback_input,
+                action_btn,
+                report_output,
+                status_output,
+                cost_output,
+                download_btn,
+            ],
+        )
+
+        new_btn.click(
+            fn=reset_to_new,
+            outputs=[
+                mode_state,
+                loaded_run_id_state,
+                mode_indicator,
+                topic_input,
+                timeframe_input,
+                region_input,
+                depth_dropdown,
+                max_words_input,
+                focus_input,
+                current_report_display,
+                feedback_input,
+                action_btn,
+                run_id_input,
+                report_output,
+                status_output,
+                run_id_output,
+                cost_output,
+                download_btn,
+            ],
+        )
+
+        action_btn.click(
+            fn=do_research,
+            inputs=[
+                mode_state,
+                loaded_run_id_state,
+                topic_input,
+                timeframe_input,
+                region_input,
+                depth_dropdown,
+                max_words_input,
+                focus_input,
+                feedback_input,
             ],
             outputs=[
                 status_output,
@@ -335,23 +452,6 @@ def create_ui() -> gr.Blocks:
                 report_output,
                 cost_output,
                 download_btn,
-            ],
-        )
-
-        load_btn.click(
-            fn=load_run_for_revision,
-            inputs=[revise_run_id],
-            outputs=[current_report_display],
-        )
-
-        revise_btn.click(
-            fn=do_revision,
-            inputs=[revise_run_id, feedback_input],
-            outputs=[
-                revised_status,
-                revised_report_output,
-                revised_cost_output,
-                revised_download_btn,
             ],
         )
 

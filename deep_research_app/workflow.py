@@ -63,6 +63,25 @@ Please produce a complete revised Markdown report that:
 Output only the revised report in Markdown format.
 """
 
+REVISION_WITH_CONSTRAINTS_TEMPLATE = """You previously produced a research report in the preceding interaction.
+
+The user has provided the following feedback:
+---
+{feedback}
+---
+
+Additionally, apply these updated constraints to the revised report:
+{constraints}
+
+Please produce a complete revised Markdown report that:
+1. Incorporates the feedback above
+2. Applies the updated constraints
+3. Preserves correct facts and citations from the original
+4. Clearly indicates any new research or sources added
+
+Output only the revised report in Markdown format.
+"""
+
 
 @dataclass
 class ResearchConstraints:
@@ -162,6 +181,7 @@ class ResearchWorkflow:
         self,
         run_id: str,
         feedback: str,
+        constraints: Optional[ResearchConstraints] = None,
         *,
         on_event: Optional[StreamCallback] = None,
         on_status: Optional[Callable[[str], None]] = None,
@@ -171,6 +191,7 @@ class ResearchWorkflow:
         Create a revision of an existing research run.
 
         Uses previous_interaction_id for context continuity.
+        Optionally accepts updated constraints to apply to the revision.
         """
         # Load previous run
         previous_run = self._storage.load_latest_run(run_id)
@@ -182,8 +203,14 @@ class ResearchWorkflow:
                 f"Cannot revise incomplete run (status: {previous_run.status})"
             )
 
-        # Build revision prompt
-        revision_prompt = REVISION_TEMPLATE.format(feedback=feedback)
+        # Build revision prompt - include constraints if provided
+        if constraints:
+            constraints_text = self._format_constraints(constraints)
+            revision_prompt = REVISION_WITH_CONSTRAINTS_TEMPLATE.format(
+                feedback=feedback, constraints=constraints_text
+            )
+        else:
+            revision_prompt = REVISION_TEMPLATE.format(feedback=feedback)
 
         # Create new run version
         run = previous_run.create_revision(feedback, revision_prompt)
@@ -291,6 +318,20 @@ class ResearchWorkflow:
         self._storage.save_run(run)
         return run
 
+    def _format_constraints(self, constraints: ResearchConstraints) -> str:
+        """Format constraints as text for prompts."""
+        parts = []
+        if constraints.timeframe:
+            parts.append(f"- Time period: {constraints.timeframe}")
+        if constraints.region:
+            parts.append(f"- Geographic focus: {constraints.region}")
+        if constraints.max_words:
+            parts.append(f"- Maximum length: {constraints.max_words} words")
+        if constraints.focus_areas:
+            parts.append(f"- Focus areas: {', '.join(constraints.focus_areas)}")
+        parts.append(f"- Depth: {constraints.depth}")
+        return "\n".join(parts) if parts else "None specified"
+
     def _build_initial_prompt(
         self,
         topic: str,
@@ -303,22 +344,7 @@ class ResearchWorkflow:
         else:
             questions_text = f"- What is {topic}?"
 
-        constraints_parts = []
-        if constraints.timeframe:
-            constraints_parts.append(f"- Time period: {constraints.timeframe}")
-        if constraints.region:
-            constraints_parts.append(f"- Geographic focus: {constraints.region}")
-        if constraints.max_words:
-            constraints_parts.append(f"- Maximum length: {constraints.max_words} words")
-        if constraints.focus_areas:
-            constraints_parts.append(
-                f"- Focus areas: {', '.join(constraints.focus_areas)}"
-            )
-        constraints_parts.append(f"- Depth: {constraints.depth}")
-
-        constraints_text = (
-            "\n".join(constraints_parts) if constraints_parts else "None specified"
-        )
+        constraints_text = self._format_constraints(constraints)
 
         return INITIAL_RESEARCH_TEMPLATE.format(
             topic=topic,
