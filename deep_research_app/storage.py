@@ -9,6 +9,7 @@ from deep_research_app.config import get_settings
 from deep_research_app.models import (
     ResearchRun,
     RunMetadata,
+    RunInputs,
     InteractionStatus,
     UsageMetadata,
 )
@@ -93,7 +94,7 @@ class RunStorage:
 
     def load_latest_run(self, run_id: str) -> Optional[ResearchRun]:
         """Load the latest version of a run."""
-        meta = self._load_metadata(run_id)
+        meta = self.load_metadata(run_id)
         if not meta:
             return None
 
@@ -112,6 +113,11 @@ class RunStorage:
         usage = None
         if version_info and version_info.get("usage"):
             usage = UsageMetadata.from_dict(version_info["usage"])
+
+        # Hydrate inputs from metadata if present
+        inputs = None
+        if version_info and version_info.get("inputs"):
+            inputs = RunInputs.from_dict(version_info["inputs"])
 
         return ResearchRun(
             run_id=run_id,
@@ -140,11 +146,12 @@ class RunStorage:
                 else InteractionStatus.PENDING
             ),
             usage=usage,
+            inputs=inputs,
         )
 
     def load_run_version(self, run_id: str, version: int) -> Optional[ResearchRun]:
         """Load a specific version of a run."""
-        meta = self._load_metadata(run_id)
+        meta = self.load_metadata(run_id)
         if not meta:
             return None
 
@@ -164,6 +171,11 @@ class RunStorage:
         usage = None
         if version_info and version_info.get("usage"):
             usage = UsageMetadata.from_dict(version_info["usage"])
+
+        # Hydrate inputs from metadata if present
+        inputs = None
+        if version_info and version_info.get("inputs"):
+            inputs = RunInputs.from_dict(version_info["inputs"])
 
         return ResearchRun(
             run_id=run_id,
@@ -190,6 +202,7 @@ class RunStorage:
                 else InteractionStatus.PENDING
             ),
             usage=usage,
+            inputs=inputs,
         )
 
     def list_runs(self) -> list[RunMetadata]:
@@ -197,7 +210,7 @@ class RunStorage:
         runs = []
         for run_dir in self._base_dir.iterdir():
             if run_dir.is_dir():
-                meta = self._load_metadata(run_dir.name)
+                meta = self.load_metadata(run_dir.name)
                 if meta:
                     runs.append(meta)
         return sorted(runs, key=lambda r: r.created_at, reverse=True)
@@ -207,12 +220,18 @@ class RunStorage:
         run_dir = self.get_run_dir(run.run_id)
         meta_path = run_dir / "meta.json"
 
+        # Determine topic: use inputs.topic if available, else fallback
+        topic = run.inputs.topic if run.inputs else run.prompt_text[:100]
+
         if meta_path.exists():
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            # Update topic if we have real inputs now
+            if run.inputs:
+                meta["topic"] = topic
         else:
             meta = {
                 "run_id": run.run_id,
-                "topic": run.prompt_text[:100],
+                "topic": topic,
                 "created_at": run.created_at.isoformat(),
                 "versions": [],
                 "latest_version": 0,
@@ -234,6 +253,7 @@ class RunStorage:
             }
             if run.usage
             else None,
+            "inputs": run.inputs.to_dict() if run.inputs else None,
         }
 
         # Replace existing version or append
@@ -250,7 +270,7 @@ class RunStorage:
 
         meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
-    def _load_metadata(self, run_id: str) -> Optional[RunMetadata]:
+    def load_metadata(self, run_id: str) -> Optional[RunMetadata]:
         """Load metadata for a run."""
         meta_path = self._base_dir / run_id / "meta.json"
         if not meta_path.exists():
@@ -258,6 +278,16 @@ class RunStorage:
 
         data = json.loads(meta_path.read_text(encoding="utf-8"))
         return RunMetadata(**data)
+
+    def get_report_path(self, run_id: str, version: int | None = None) -> Path | None:
+        """Get path to report file, or None if it doesn't exist."""
+        if version is None:
+            meta = self.load_metadata(run_id)
+            if not meta:
+                return None
+            version = meta.latest_version
+        path = self._base_dir / run_id / f"report_v{version}.md"
+        return path if path.exists() else None
 
     def save_sources(self, run_id: str, version: int, sources: dict) -> None:
         """Save sources.json for a version."""

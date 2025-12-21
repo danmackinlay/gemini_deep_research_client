@@ -1,27 +1,12 @@
 """Gradio web UI for the Deep Research client."""
 
-from pathlib import Path
-from tempfile import gettempdir
 from typing import Generator
 
 import gradio as gr
 
-from deep_research_app.workflow import (
-    ResearchWorkflow,
-    ResearchConstraints,
-    parse_prompt,
-)
+from deep_research_app.workflow import ResearchWorkflow
 from deep_research_app.storage import RunStorage
-from deep_research_app.models import InteractionStatus
-
-
-def prepare_download(report_text: str | None, run_id: str) -> str | None:
-    """Write report to temp file and return path for download."""
-    if not report_text:
-        return None
-    path = Path(gettempdir()) / f"{run_id}_report.md"
-    path.write_text(report_text, encoding="utf-8")
-    return str(path)
+from deep_research_app.models import InteractionStatus, ResearchConstraints, StreamEvent
 
 
 def create_ui() -> gr.Blocks:
@@ -155,18 +140,24 @@ def create_ui() -> gr.Blocks:
                     mode_state: "NEW",
                 }
 
-            # Parse the original prompt to extract fields
-            parsed = parse_prompt(run.prompt_text)
+            # Use stored inputs (preserved across revisions)
+            inputs = run.inputs
+            topic = inputs.topic if inputs else ""
+            constraints = inputs.constraints if inputs else None
 
             return {
                 mode_state: "REVISION",
                 loaded_run_id_state: run_id.strip(),
                 mode_indicator: f"Mode: Revising run {run_id.strip()} (v{run.version})",
-                topic_input: parsed["topic"],
-                timeframe_input: parsed["timeframe"] or "",
-                region_input: parsed["region"] or "",
-                max_words_input: parsed["max_words"],
-                focus_input: parsed["focus_areas"] or "",
+                topic_input: topic,
+                timeframe_input: (constraints.timeframe or "") if constraints else "",
+                region_input: (constraints.region or "") if constraints else "",
+                max_words_input: constraints.max_words if constraints else None,
+                focus_input: (
+                    ", ".join(constraints.focus_areas)
+                    if constraints and constraints.focus_areas
+                    else ""
+                ),
                 current_report_display: gr.Markdown(
                     value=run.report_markdown or "No report available", visible=True
                 ),
@@ -223,22 +214,22 @@ def create_ui() -> gr.Blocks:
 
             workflow = ResearchWorkflow()
 
-            constraints = ResearchConstraints(
-                timeframe=timeframe.strip() or None,
-                region=region.strip() or None,
-                max_words=int(max_words) if max_words else None,
-                focus_areas=[a.strip() for a in focus.split(",") if a.strip()] or None,
+            constraints = ResearchConstraints.from_user_input(
+                timeframe=timeframe,
+                region=region,
+                max_words=max_words,
+                focus=focus,
             )
 
             accumulated_text = ""
             current_run_id = ""
 
-            def on_event(event_type: str, text: str) -> None:
+            def on_event(event: StreamEvent) -> None:
                 nonlocal accumulated_text, current_run_id
-                if event_type == "start" and "Interaction started:" in text:
-                    current_run_id = text.split(": ")[1]
-                elif event_type == "text":
-                    accumulated_text += text
+                if event.type == "start":
+                    current_run_id = event.interaction_id or ""
+                elif event.type == "text":
+                    accumulated_text += event.text
 
             def on_status(status: str) -> None:
                 pass  # Could update status in real-time if needed
@@ -274,9 +265,8 @@ def create_ui() -> gr.Blocks:
                 report_text = (
                     run.report_markdown or accumulated_text or "No report generated"
                 )
-                download_path = prepare_download(
-                    run.report_markdown, f"{run.run_id}_v{run.version}"
-                )
+                # Use the persistent report path instead of temp file
+                download_path = storage.get_report_path(run.run_id, run.version)
                 yield {
                     status_output: run.status.value,
                     run_id_output: run.run_id,
@@ -285,7 +275,8 @@ def create_ui() -> gr.Blocks:
                     if run.usage
                     else "",
                     download_btn: gr.DownloadButton(
-                        value=download_path, visible=download_path is not None
+                        value=str(download_path) if download_path else None,
+                        visible=download_path is not None,
                     ),
                 }
 

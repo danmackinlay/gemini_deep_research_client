@@ -9,10 +9,15 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 
-from deep_research_app.workflow import ResearchWorkflow, ResearchConstraints
+from deep_research_app.workflow import ResearchWorkflow
 from deep_research_app.storage import RunStorage
 from deep_research_app.deep_research import DeepResearchClient
-from deep_research_app.models import InteractionStatus, UsageMetadata
+from deep_research_app.models import (
+    InteractionStatus,
+    UsageMetadata,
+    ResearchConstraints,
+    StreamEvent,
+)
 
 app = typer.Typer(
     name="deep-research",
@@ -81,28 +86,28 @@ def new_research(
     """
     workflow = ResearchWorkflow()
 
-    constraints = ResearchConstraints(
+    constraints = ResearchConstraints.from_user_input(
         timeframe=timeframe,
         region=region,
         max_words=max_words,
-        focus_areas=focus.split(",") if focus else None,
+        focus=focus,
     )
 
     console.print(
         Panel(f"[bold]Starting research on:[/bold] {topic}", title="Deep Research")
     )
 
-    def on_event(event_type: str, text: str) -> None:
-        if event_type == "start":
-            console.print(f"[dim]{text}[/dim]")
-        elif event_type == "text":
-            console.print(text, end="")
-        elif event_type == "thought" and _show_thoughts:
-            console.print(f"\n[yellow][THOUGHT][/yellow] {text}")
-        elif event_type == "complete":
+    def on_event(event: StreamEvent) -> None:
+        if event.type == "start":
+            console.print(f"[dim]Interaction: {event.interaction_id}[/dim]")
+        elif event.type == "text":
+            console.print(event.text, end="")
+        elif event.type == "thought" and _show_thoughts:
+            console.print(f"\n[yellow][THOUGHT][/yellow] {event.text}")
+        elif event.type == "complete":
             console.print("\n[green]Research complete![/green]")
-        elif event_type == "error":
-            console.print(f"\n[red]Error: {text}[/red]")
+        elif event.type == "error":
+            console.print(f"\n[red]Error: {event.text}[/red]")
 
     def on_status(status: str) -> None:
         console.print(f"[dim]Status: {status}[/dim]")
@@ -197,12 +202,12 @@ def revise_research(
 
     console.print(f"\n[bold]Revising with feedback:[/bold] {feedback}\n")
 
-    def on_event(event_type: str, text: str) -> None:
-        if event_type == "text":
-            console.print(text, end="")
-        elif event_type == "thought" and _show_thoughts:
-            console.print(f"\n[yellow][THOUGHT][/yellow] {text}")
-        elif event_type == "complete":
+    def on_event(event: StreamEvent) -> None:
+        if event.type == "text":
+            console.print(event.text, end="")
+        elif event.type == "thought" and _show_thoughts:
+            console.print(f"\n[yellow][THOUGHT][/yellow] {event.text}")
+        elif event.type == "complete":
             console.print("\n[green]Revision complete![/green]")
 
     try:
@@ -269,16 +274,9 @@ def show_report(
         console.print("[yellow]No report available (run may be incomplete)[/yellow]")
         raise typer.Exit(1)
 
-    # Show usage info from metadata
-    meta = storage._load_metadata(run_id)
-    if meta:
-        version_info = next(
-            (v for v in meta.versions if v["version"] == run.version),
-            None,
-        )
-        if version_info and version_info.get("usage"):
-            usage = UsageMetadata.from_dict(version_info["usage"])
-            console.print(f"[dim]{usage.format_cost()}[/dim]\n")
+    # Show usage info (already hydrated on ResearchRun)
+    if run.usage:
+        console.print(f"[dim]{run.usage.format_cost()}[/dim]\n")
 
     if raw:
         console.print(run.report_markdown)
@@ -351,10 +349,10 @@ def resume_run(
     """
     workflow = ResearchWorkflow()
 
-    def on_event(event_type: str, text: str) -> None:
-        if event_type == "text":
-            console.print(text, end="")
-        elif event_type == "complete":
+    def on_event(event: StreamEvent) -> None:
+        if event.type == "text":
+            console.print(event.text, end="")
+        elif event.type == "complete":
             console.print("\n[green]Research complete![/green]")
 
     def on_status(status: str) -> None:

@@ -11,12 +11,13 @@ from deep_research_app.models import (
     ResumeResult,
     PollResult,
     StreamState,
+    StreamEvent,
     InteractionStatus,
     UsageMetadata,
 )
 
-# Type alias for streaming event callback: (event_type, text) -> None
-StreamCallback = Callable[[str, str], None]
+# Type alias for streaming event callback
+StreamCallback = Callable[[StreamEvent], None]
 
 # Type alias for debug callback: (chunk_dict) -> None
 DebugCallback = Callable[[dict[str, Any]], None]
@@ -407,15 +408,23 @@ class DeepResearchClient:
         on_event: Optional[StreamCallback],
     ) -> None:
         """Process a single streaming chunk and update state."""
+        # Track event ID for resume capability
+        event_id = None
+        if hasattr(chunk, "event_id") and chunk.event_id:
+            event_id = chunk.event_id
+            state.last_event_id = event_id
+
         # Handle interaction.start - capture ID
         if chunk.event_type == "interaction.start":
             state.interaction_id = chunk.interaction.id
             if on_event:
-                on_event("start", f"Interaction started: {state.interaction_id}")
-
-        # Track last event ID for resume capability
-        if hasattr(chunk, "event_id") and chunk.event_id:
-            state.last_event_id = chunk.event_id
+                on_event(
+                    StreamEvent(
+                        type="start",
+                        interaction_id=state.interaction_id,
+                        event_id=event_id,
+                    )
+                )
 
         # Handle content deltas
         if chunk.event_type == "content.delta":
@@ -426,12 +435,18 @@ class DeepResearchClient:
                         text = delta.text if hasattr(delta, "text") else ""
                         state.accumulated_text += text
                         if on_event:
-                            on_event("text", text)
+                            on_event(
+                                StreamEvent(type="text", text=text, event_id=event_id)
+                            )
                     elif delta.type == "thought_summary":
                         thought = delta.thought if hasattr(delta, "thought") else ""
                         state.thought_summaries.append(thought)
                         if on_event:
-                            on_event("thought", thought)
+                            on_event(
+                                StreamEvent(
+                                    type="thought", text=thought, event_id=event_id
+                                )
+                            )
 
         # Handle completion
         if chunk.event_type == "interaction.complete":
@@ -448,13 +463,13 @@ class DeepResearchClient:
                         thinking_tokens=usage.total_reasoning_tokens,
                     )
             if on_event:
-                on_event("complete", "")
+                on_event(StreamEvent(type="complete", event_id=event_id))
 
         # Handle errors
         if chunk.event_type == "error":
             state.error = str(chunk)
             if on_event:
-                on_event("error", state.error)
+                on_event(StreamEvent(type="error", text=state.error, event_id=event_id))
 
     def _fetch_usage(self, interaction_id: str) -> Optional[UsageMetadata]:
         """Fetch usage from canonical interaction if available."""

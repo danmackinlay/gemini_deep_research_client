@@ -1,8 +1,7 @@
 """High-level research orchestration with prompt templates."""
 
 import re
-from dataclasses import dataclass
-from typing import Optional, Callable
+from typing import Optional, Callable, Union
 
 from deep_research_app.deep_research import (
     DeepResearchClient,
@@ -10,7 +9,15 @@ from deep_research_app.deep_research import (
     DebugCallback,
 )
 from deep_research_app.storage import RunStorage
-from deep_research_app.models import ResearchRun, InteractionStatus
+from deep_research_app.models import (
+    ResearchRun,
+    ResearchConstraints,
+    RunInputs,
+    InteractionStatus,
+    StartResult,
+    ResumeResult,
+    StreamEvent,
+)
 from deep_research_app.citations import process_report
 
 # Prompt templates
@@ -136,16 +143,6 @@ def parse_prompt(prompt_text: str) -> dict:
     return result
 
 
-@dataclass
-class ResearchConstraints:
-    """Constraints for a research run."""
-
-    timeframe: Optional[str] = None
-    region: Optional[str] = None
-    max_words: Optional[int] = None
-    focus_areas: Optional[list[str]] = None
-
-
 class ResearchWorkflow:
     """Orchestrates research runs with streaming and persistence."""
 
@@ -176,58 +173,32 @@ class ResearchWorkflow:
         # Create run object
         run = ResearchRun.new(prompt)
         run.status = InteractionStatus.RUNNING
+        run.inputs = RunInputs(
+            topic=topic, constraints=constraints, questions=questions
+        )
 
         # Save initial state
         self._storage.save_run(run)
 
-        # Wrap callback to track state for resume
-        wrapped_callback = self._wrap_event_callback(run.run_id, on_event)
+        # Accumulate text for potential resume
+        partial_text: list[str] = []
+
+        def wrapped_on_event(event: StreamEvent) -> None:
+            if event.type == "text":
+                partial_text.append(event.text)
+            if on_event:
+                on_event(event)
 
         # Start research with streaming
         result = self._client.start_research(
             prompt,
             stream=True,
-            on_event=wrapped_callback,
+            on_event=wrapped_on_event,
             on_debug=on_debug,
         )
 
         run.interaction_id = result.interaction_id
-
-        if result.complete_via_stream:
-            # Streaming completed successfully
-            run.report_markdown = self._process_citations(
-                result.final_markdown, run.run_id, run.version, on_status
-            )
-            run.status = InteractionStatus.COMPLETED
-            run.usage = result.usage
-            self._storage.clear_stream_state(run.run_id)
-        elif result.error and "Interrupted" in result.error:
-            # User interrupted - state already saved via callback
-            run.status = InteractionStatus.INTERRUPTED
-        else:
-            # Streaming failed or incomplete - fall back to polling
-            if on_status:
-                on_status("Streaming incomplete, falling back to polling...")
-
-            poll_result = self._client.poll_interaction(
-                result.interaction_id,
-                on_status=on_status,
-            )
-
-            if poll_result.status == InteractionStatus.COMPLETED:
-                run.report_markdown = self._process_citations(
-                    poll_result.final_markdown, run.run_id, run.version, on_status
-                )
-                run.status = InteractionStatus.COMPLETED
-                run.usage = poll_result.usage
-                self._storage.clear_stream_state(run.run_id)
-            else:
-                run.status = poll_result.status
-
-        # Save final state
-        self._storage.save_run(run)
-
-        return run
+        return self._finalize_result(run, result, partial_text, on_status)
 
     def revise_research(
         self,
@@ -271,51 +242,26 @@ class ResearchWorkflow:
         # Save initial state
         self._storage.save_run(run)
 
-        # Wrap callback
-        wrapped_callback = self._wrap_event_callback(run.run_id, on_event)
+        # Accumulate text for potential resume
+        partial_text: list[str] = []
+
+        def wrapped_on_event(event: StreamEvent) -> None:
+            if event.type == "text":
+                partial_text.append(event.text)
+            if on_event:
+                on_event(event)
 
         # Start revision with previous context
         result = self._client.start_research_with_context(
             prompt=revision_prompt,
             previous_interaction_id=previous_run.interaction_id,
             stream=True,
-            on_event=wrapped_callback,
+            on_event=wrapped_on_event,
             on_debug=on_debug,
         )
 
         run.interaction_id = result.interaction_id
-
-        # Same completion/fallback logic as initial research
-        if result.complete_via_stream:
-            run.report_markdown = self._process_citations(
-                result.final_markdown, run.run_id, run.version, on_status
-            )
-            run.status = InteractionStatus.COMPLETED
-            run.usage = result.usage
-            self._storage.clear_stream_state(run.run_id)
-        elif result.error and "Interrupted" in result.error:
-            run.status = InteractionStatus.INTERRUPTED
-        else:
-            if on_status:
-                on_status("Streaming incomplete, falling back to polling...")
-
-            poll_result = self._client.poll_interaction(
-                result.interaction_id,
-                on_status=on_status,
-            )
-
-            if poll_result.status == InteractionStatus.COMPLETED:
-                run.report_markdown = self._process_citations(
-                    poll_result.final_markdown, run.run_id, run.version, on_status
-                )
-                run.status = InteractionStatus.COMPLETED
-                run.usage = poll_result.usage
-                self._storage.clear_stream_state(run.run_id)
-            else:
-                run.status = poll_result.status
-
-        self._storage.save_run(run)
-        return run
+        return self._finalize_result(run, result, partial_text, on_status)
 
     def resume_interrupted(
         self,
@@ -333,42 +279,27 @@ class ResearchWorkflow:
         if not stream_state:
             raise ValueError(f"No saved stream state for run: {run_id}")
 
-        # Wrap callback
-        wrapped_callback = self._wrap_event_callback(run.run_id, on_event)
+        # Get partial text accumulated before interruption
+        prepend_text = stream_state.get("partial_text", "")
+
+        # Accumulate new text during resume
+        partial_text: list[str] = []
+
+        def wrapped_on_event(event: StreamEvent) -> None:
+            if event.type == "text":
+                partial_text.append(event.text)
+            if on_event:
+                on_event(event)
 
         result = self._client.resume_stream(
             stream_state["interaction_id"],
             stream_state["last_event_id"],
-            on_event=wrapped_callback,
+            on_event=wrapped_on_event,
         )
 
-        if result.complete_via_stream:
-            # Combine partial text with resumed text
-            partial = stream_state.get("partial_text", "")
-            resumed = result.final_markdown or ""
-            run.report_markdown = partial + resumed
-            run.status = InteractionStatus.COMPLETED
-            run.usage = result.usage
-            self._storage.clear_stream_state(run_id)
-        else:
-            # Fall back to polling
-            if on_status:
-                on_status("Resume incomplete, falling back to polling...")
-
-            poll_result = self._client.poll_interaction(
-                result.interaction_id,
-                on_status=on_status,
-            )
-            if poll_result.status == InteractionStatus.COMPLETED:
-                run.report_markdown = poll_result.final_markdown
-                run.status = InteractionStatus.COMPLETED
-                run.usage = poll_result.usage
-                self._storage.clear_stream_state(run_id)
-            else:
-                run.status = poll_result.status
-
-        self._storage.save_run(run)
-        return run
+        return self._finalize_result(
+            run, result, partial_text, on_status, prepend_text=prepend_text
+        )
 
     def _format_constraints(self, constraints: ResearchConstraints) -> str:
         """Format constraints as text for prompts."""
@@ -403,34 +334,6 @@ class ResearchWorkflow:
             constraints=constraints_text,
         )
 
-    def _wrap_event_callback(
-        self,
-        run_id: str,
-        on_event: Optional[StreamCallback],
-    ) -> StreamCallback:
-        """Wrap callback to also save stream state periodically."""
-        accumulated: dict = {"text": "", "last_event_id": None, "interaction_id": None}
-
-        def wrapper(event_type: str, text: str) -> None:
-            if event_type == "start" and "Interaction started:" in text:
-                accumulated["interaction_id"] = text.split(": ")[1]
-            if event_type == "text":
-                accumulated["text"] += text
-
-            # Save state periodically for resume capability
-            if accumulated["interaction_id"] and accumulated.get("last_event_id"):
-                self._storage.save_stream_state(
-                    run_id,
-                    accumulated["interaction_id"],
-                    accumulated["last_event_id"],
-                    accumulated["text"],
-                )
-
-            if on_event:
-                on_event(event_type, text)
-
-        return wrapper
-
     def _process_citations(
         self,
         report_text: Optional[str],
@@ -460,3 +363,82 @@ class ResearchWorkflow:
                     on_status(f"Citation warning: {error}")
 
         return result.text
+
+    def _finalize_result(
+        self,
+        run: ResearchRun,
+        result: Union[StartResult, ResumeResult],
+        partial_text: list[str],
+        on_status: Optional[Callable[[str], None]],
+        *,
+        prepend_text: str = "",
+    ) -> ResearchRun:
+        """
+        Handle the common completion logic after streaming.
+
+        Handles four cases:
+        1. Stream completed with content -> process citations, set completed
+        2. Stream completed but empty -> poll for actual result (handles early API completion)
+        3. Stream interrupted -> save stream state for resume
+        4. Stream incomplete/error -> fall back to polling
+        """
+        final_text = prepend_text + (result.final_markdown or "")
+
+        if result.complete_via_stream and final_text.strip():
+            # Stream completed with content
+            run.report_markdown = self._process_citations(
+                final_text, run.run_id, run.version, on_status
+            )
+            run.status = InteractionStatus.COMPLETED
+            run.usage = result.usage
+            self._storage.clear_stream_state(run.run_id)
+        elif result.complete_via_stream and not final_text.strip():
+            # Stream "completed" but with no content - poll for actual result
+            if on_status:
+                on_status("Stream completed without content, polling for result...")
+            poll_result = self._client.poll_interaction(
+                result.interaction_id,
+                on_status=on_status,
+            )
+            if poll_result.status == InteractionStatus.COMPLETED:
+                run.report_markdown = self._process_citations(
+                    poll_result.final_markdown, run.run_id, run.version, on_status
+                )
+                run.status = InteractionStatus.COMPLETED
+                run.usage = poll_result.usage or result.usage
+            else:
+                run.status = poll_result.status
+            self._storage.clear_stream_state(run.run_id)
+        elif result.error and "Interrupted" in result.error:
+            # User interrupted - save stream state for resume
+            run.status = InteractionStatus.INTERRUPTED
+            if result.last_event_id:
+                self._storage.save_stream_state(
+                    run.run_id,
+                    result.interaction_id,
+                    result.last_event_id,
+                    prepend_text + "".join(partial_text),
+                )
+        else:
+            # Streaming failed or incomplete - fall back to polling
+            if on_status:
+                on_status("Streaming incomplete, falling back to polling...")
+
+            poll_result = self._client.poll_interaction(
+                result.interaction_id,
+                on_status=on_status,
+            )
+
+            if poll_result.status == InteractionStatus.COMPLETED:
+                run.report_markdown = self._process_citations(
+                    poll_result.final_markdown, run.run_id, run.version, on_status
+                )
+                run.status = InteractionStatus.COMPLETED
+                run.usage = poll_result.usage
+                self._storage.clear_stream_state(run.run_id)
+            else:
+                run.status = poll_result.status
+
+        # Save final state
+        self._storage.save_run(run)
+        return run

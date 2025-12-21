@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 import uuid
 
 
@@ -71,6 +71,16 @@ class StreamState:
     usage: Optional[UsageMetadata] = None
 
 
+@dataclass(frozen=True)
+class StreamEvent:
+    """Typed event emitted during streaming."""
+
+    type: Literal["start", "text", "thought", "complete", "error"]
+    text: str = ""
+    interaction_id: Optional[str] = None
+    event_id: Optional[str] = None
+
+
 @dataclass
 class StartResult:
     """Result from starting a new research interaction."""
@@ -107,6 +117,80 @@ class PollResult:
 
 
 @dataclass
+class ResearchConstraints:
+    """Constraints for a research run."""
+
+    timeframe: Optional[str] = None
+    region: Optional[str] = None
+    max_words: Optional[int] = None
+    focus_areas: Optional[list[str]] = None
+
+    def to_dict(self) -> dict:
+        """Serialize to dict for JSON storage."""
+        return {
+            "timeframe": self.timeframe,
+            "region": self.region,
+            "max_words": self.max_words,
+            "focus_areas": self.focus_areas,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ResearchConstraints":
+        """Deserialize from dict."""
+        return cls(
+            timeframe=d.get("timeframe"),
+            region=d.get("region"),
+            max_words=d.get("max_words"),
+            focus_areas=d.get("focus_areas"),
+        )
+
+    @classmethod
+    def from_user_input(
+        cls,
+        *,
+        timeframe: str | None,
+        region: str | None,
+        max_words: int | float | None,
+        focus: str | None,
+    ) -> "ResearchConstraints":
+        """Create from raw user input with normalization."""
+        return cls(
+            timeframe=timeframe.strip() if timeframe else None,
+            region=region.strip() if region else None,
+            max_words=int(max_words) if max_words else None,
+            focus_areas=[a.strip() for a in focus.split(",") if a.strip()]
+            if focus
+            else None,
+        )
+
+
+@dataclass
+class RunInputs:
+    """Original user inputs for a research run (preserved across revisions)."""
+
+    topic: str
+    constraints: ResearchConstraints
+    questions: Optional[list[str]] = None
+
+    def to_dict(self) -> dict:
+        """Serialize to dict for JSON storage."""
+        return {
+            "topic": self.topic,
+            "constraints": self.constraints.to_dict(),
+            "questions": self.questions,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "RunInputs":
+        """Deserialize from dict."""
+        return cls(
+            topic=d["topic"],
+            constraints=ResearchConstraints.from_dict(d.get("constraints", {})),
+            questions=d.get("questions"),
+        )
+
+
+@dataclass
 class ResearchRun:
     """Represents a versioned research run (local entity)."""
 
@@ -120,6 +204,7 @@ class ResearchRun:
     previous_interaction_id: Optional[str] = None
     status: InteractionStatus = InteractionStatus.PENDING
     usage: Optional[UsageMetadata] = None
+    inputs: Optional[RunInputs] = None
 
     @classmethod
     def new(cls, prompt_text: str) -> "ResearchRun":
@@ -144,6 +229,7 @@ class ResearchRun:
             created_at=datetime.now(),
             feedback=feedback,
             previous_interaction_id=self.interaction_id,
+            inputs=self.inputs,  # Preserve original inputs across revisions
         )
 
 
