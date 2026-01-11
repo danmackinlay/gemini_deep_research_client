@@ -57,16 +57,31 @@ def parse_sources(report_text: str) -> dict[str, SourceInfo]:
     return sources
 
 
+def _is_inside_math(text: str, position: int) -> bool:
+    """Check if position is inside a LaTeX math block ($...$ or $$...$$)."""
+    text_before = text[:position]
+    # Count unescaped $ signs - odd count means we're inside inline math
+    # This handles both $...$ and $$...$$ (since $$ is just two $)
+    dollar_count = len(re.findall(r"(?<!\\)\$", text_before))
+    return dollar_count % 2 == 1
+
+
 def normalize_inline_citations(text: str, sources: dict[str, SourceInfo]) -> str:
     """
     Convert [cite: N], [cite: N, M] to [N](url), [M](url).
 
     Also handles:
     - [N] (bare number, not already a link)
+
+    Skips matches inside LaTeX math blocks ($...$ or $$...$$).
     """
 
     def replace_cite(match: re.Match) -> str:
         """Replace [cite: N, M, ...] with [N](url), [M](url), ..."""
+        # Skip if inside math block
+        if _is_inside_math(text, match.start()):
+            return match.group(0)
+
         nums_str = match.group(1)
         nums = [n.strip() for n in nums_str.split(",")]
         parts = []
@@ -82,6 +97,10 @@ def normalize_inline_citations(text: str, sources: dict[str, SourceInfo]) -> str
 
     # Replace bare [N] that aren't already links (not followed by `(`)
     def replace_bare(match: re.Match) -> str:
+        # Skip if inside math block
+        if _is_inside_math(text, match.start()):
+            return match.group(0)
+
         n = match.group(1)
         if n in sources:
             return f"[{n}]({sources[n].final_url or sources[n].url})"
