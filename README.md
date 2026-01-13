@@ -13,10 +13,7 @@ This project uses [uv](https://github.com/astral-sh/uv) for dependency managemen
 
 ### Installation
 
-1. Install uv (if not already installed):
-```bash
-pip install uv
-```
+1. [Install uv](https://docs.astral.sh/uv/getting-started/installation/) (if not already installed):
 
 2. Install dependencies:
 ```bash
@@ -25,12 +22,18 @@ uv sync
 
 3. Set up your Gemini API key via [direnv](https://direnv.net/):
 ```bash
-# Create .envrc with your API key
-echo 'export GEMINI_API_KEY="your-api-key-here"' > .envrc
-direnv allow
+export GEMINI_API_KEY="your-api-key-here"
 ```
 
+
 ## Usage
+
+### Web UI
+
+```bash
+uv run python -m deep_research_app.ui_gradio
+```
+
 
 ### CLI
 
@@ -67,10 +70,14 @@ uv run deep-research new "topic" \
 uv run deep-research --show-thoughts new "topic"
 ```
 
-### Web UI
+## Bonus
+
+I like to automatically configure my Gemini API key using [direnv](https://direnv.net)
 
 ```bash
-uv run python -m deep_research_app.ui_gradio
+# Create .envrc with your API key
+echo 'export GEMINI_API_KEY="your-api-key-here"' > .envrc
+direnv allow
 ```
 
 ## Features
