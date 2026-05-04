@@ -31,6 +31,8 @@ export GEMINI_API_KEY="your-api-key-here"
 ### Web UI
 
 ```bash
+uv run deep-research-ui
+# or, equivalently:
 uv run python -m deep_research_app.ui_gradio
 ```
 
@@ -69,6 +71,60 @@ uv run deep-research new "topic" \
 # Show thinking summaries during streaming
 uv run deep-research --show-thoughts new "topic"
 ```
+
+## Install into another project / run via `uvx`
+
+The package is not on PyPI, but it is a standard PEP 621 build and can be
+installed or executed directly from this git repo.
+
+### Run without installing (`uvx`)
+
+```bash
+# CLI
+uvx --from git+https://github.com/danmackinlay/gemini_deep_research_client.git \
+    deep-research new "Impact of AI on healthcare"
+
+# Web UI
+uvx --from git+https://github.com/danmackinlay/gemini_deep_research_client.git \
+    deep-research-ui
+```
+
+`GEMINI_API_KEY` must be set in the environment that invokes `uvx` — it does
+not read this project's `.envrc`.
+
+### Install as a dependency
+
+```bash
+uv add git+https://github.com/danmackinlay/gemini_deep_research_client.git
+# or
+pip install git+https://github.com/danmackinlay/gemini_deep_research_client.git
+```
+
+This installs the `deep-research` and `deep-research-ui` console scripts and
+makes the `deep_research_app` package importable.
+
+### Use the Python API
+
+```python
+from deep_research_app import (
+    ResearchWorkflow,
+    RunStorage,
+    ResearchConstraints,
+    DeepResearchClient,
+    Settings,
+)
+
+workflow = ResearchWorkflow()
+run_id, report = workflow.run_initial_research(
+    topic="Impact of AI on healthcare",
+    constraints=ResearchConstraints(timeframe="2020-2024"),
+)
+```
+
+Public symbols re-exported from `deep_research_app`: `Settings`,
+`get_settings`, `InteractionStatus`, `ResearchRun`, `RunMetadata`,
+`PollResult`, `DeepResearchClient`, `RunStorage`, `ResearchWorkflow`,
+`ResearchConstraints`.
 
 ## Bonus
 

@@ -14,6 +14,7 @@ dependencies = [
 
 [project.scripts]
 deep-research = "deep_research_app.main:app"
+deep-research-ui = "deep_research_app.ui_gradio:launch"
 
 [build-system]
 requires = ["hatchling"]
