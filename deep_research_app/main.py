@@ -68,6 +68,17 @@ def new_research(
         "--focus",
         help="Comma-separated focus areas",
     ),
+    seed: Optional[list[Path]] = typer.Option(
+        None,
+        "--seed",
+        "-s",
+        help="Path to a seed document (YAML, markdown, bibtex, ...) to embed "
+        "in the prompt. Repeat for multiple files.",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+    ),
 ) -> None:
     """
     Start a new research run on a topic.
@@ -101,6 +112,7 @@ def new_research(
         run = workflow.run_initial_research(
             topic=topic,
             constraints=constraints,
+            seed_paths=seed,
             on_status=on_status,
             on_debug=on_debug if _debug_chunks else None,
         )
@@ -141,6 +153,17 @@ def revise_research(
         "--feedback",
         "-m",
         help="Feedback for revision (or enter interactively)",
+    ),
+    seed: Optional[list[Path]] = typer.Option(
+        None,
+        "--seed",
+        "-s",
+        help="Path to a seed document to embed in the revision prompt "
+        "(repeat for multiple files).",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
     ),
 ) -> None:
     """
@@ -184,6 +207,7 @@ def revise_research(
         revised_run = workflow.revise_research(
             run_id=run_id,
             feedback=feedback,
+            seed_paths=seed,
             on_status=on_status,
         )
 

@@ -1,6 +1,8 @@
 """Persistence layer for research runs."""
 
 import json
+import shutil
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -10,6 +12,7 @@ from deep_research_app.models import (
     ResearchRun,
     RunMetadata,
     RunInputs,
+    SeedFile,
     InteractionStatus,
     UsageMetadata,
 )
@@ -80,6 +83,10 @@ class RunStorage:
         if version_info and version_info.get("inputs"):
             inputs = RunInputs.from_dict(version_info["inputs"])
 
+        seed_filenames = (
+            list(version_info.get("seeds") or []) if version_info else []
+        ) or None
+
         return ResearchRun(
             run_id=run_id,
             interaction_id=version_info["interaction_id"] if version_info else "",
@@ -108,6 +115,7 @@ class RunStorage:
             ),
             usage=usage,
             inputs=inputs,
+            seed_filenames=seed_filenames,
         )
 
     def load_run_version(self, run_id: str, version: int) -> Optional[ResearchRun]:
@@ -138,6 +146,10 @@ class RunStorage:
         if version_info and version_info.get("inputs"):
             inputs = RunInputs.from_dict(version_info["inputs"])
 
+        seed_filenames = (
+            list(version_info.get("seeds") or []) if version_info else []
+        ) or None
+
         return ResearchRun(
             run_id=run_id,
             interaction_id=version_info["interaction_id"] if version_info else "",
@@ -164,6 +176,7 @@ class RunStorage:
             ),
             usage=usage,
             inputs=inputs,
+            seed_filenames=seed_filenames,
         )
 
     def list_runs(self) -> list[RunMetadata]:
@@ -196,6 +209,7 @@ class RunStorage:
                 "created_at": run.created_at.isoformat(),
                 "versions": [],
                 "latest_version": 0,
+                "filename_stem": None,
             }
 
         # Add or update version info
@@ -215,6 +229,7 @@ class RunStorage:
             if run.usage
             else None,
             "inputs": run.inputs.to_dict() if run.inputs else None,
+            "seeds": list(run.seed_filenames) if run.seed_filenames else [],
         }
 
         # Replace existing version or append
@@ -239,6 +254,15 @@ class RunStorage:
 
         data = json.loads(meta_path.read_text(encoding="utf-8"))
         return RunMetadata(**data)
+
+    def set_filename_stem(self, run_id: str, stem: Optional[str]) -> None:
+        """Persist (or clear) a user-chosen download filename stem in meta.json."""
+        meta_path = self._base_dir / run_id / "meta.json"
+        if not meta_path.exists():
+            return
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["filename_stem"] = stem or None
+        meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     def get_report_path(self, run_id: str, version: int | None = None) -> Path | None:
         """Get path to report file, or None if it doesn't exist."""
@@ -275,3 +299,73 @@ class RunStorage:
         if not path.exists():
             return None
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def get_seeds_dir(self, run_id: str, version: int) -> Path:
+        """Path to the per-version seeds directory (may not exist)."""
+        return self._base_dir / run_id / f"seeds_v{version}"
+
+    def save_seeds(
+        self, run_id: str, version: int, seed_paths: list[Path]
+    ) -> list[str]:
+        """
+        Copy seed files into runs/{run_id}/seeds_v{version}/ and return basenames.
+
+        Disambiguates duplicate basenames by appending _1, _2, ... while
+        preserving the extension.
+        """
+        run_dir = self.get_run_dir(run_id)
+        seeds_dir = run_dir / f"seeds_v{version}"
+        seeds_dir.mkdir(parents=True, exist_ok=True)
+
+        saved: list[str] = []
+        used: set[str] = set()
+        for src in seed_paths:
+            src_path = Path(src)
+            base = src_path.name
+            if base in used:
+                stem, ext = src_path.stem, src_path.suffix
+                i = 1
+                while f"{stem}_{i}{ext}" in used:
+                    i += 1
+                base = f"{stem}_{i}{ext}"
+            used.add(base)
+            shutil.copy2(src_path, seeds_dir / base)
+            saved.append(base)
+        return saved
+
+    def load_seeds(self, run_id: str, version: int) -> list[SeedFile]:
+        """
+        Load seeds for a version from disk, in the order recorded in meta.json.
+
+        Files that cannot be decoded as UTF-8 are skipped with a warning — the
+        seed pipeline embeds file content into a text prompt, so binary blobs
+        are not usable downstream.
+        """
+        meta = self.load_metadata(run_id)
+        if not meta:
+            return []
+        version_info = next(
+            (v for v in meta.versions if v["version"] == version),
+            None,
+        )
+        if not version_info:
+            return []
+        filenames = version_info.get("seeds") or []
+        seeds_dir = self._base_dir / run_id / f"seeds_v{version}"
+        out: list[SeedFile] = []
+        for name in filenames:
+            path = seeds_dir / name
+            if not path.exists():
+                continue
+            try:
+                content = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError as e:
+                warnings.warn(
+                    f"Skipping seed {name!r} in {seeds_dir}: not valid UTF-8 "
+                    f"({e.reason} at byte {e.start}). Binary files cannot be "
+                    f"embedded in the research prompt.",
+                    stacklevel=2,
+                )
+                continue
+            out.append(SeedFile(filename=name, content=content))
+        return out

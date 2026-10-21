@@ -1,5 +1,6 @@
 """High-level research orchestration with prompt templates."""
 
+from pathlib import Path
 from typing import Optional, Callable
 
 from deep_research_app.deep_research import (
@@ -11,9 +12,44 @@ from deep_research_app.models import (
     ResearchRun,
     ResearchConstraints,
     RunInputs,
+    SeedFile,
     InteractionStatus,
 )
 from deep_research_app.citations import process_report
+
+EXT_TO_FENCE = {
+    # Markdown family
+    ".md": "markdown",
+    ".markdown": "markdown",
+    ".qmd": "markdown",
+    ".rmd": "markdown",
+    ".mdx": "markdown",
+    # Typesetting / prose
+    ".tex": "latex",
+    ".rst": "rst",
+    ".org": "org",
+    ".typ": "typst",
+    ".adoc": "asciidoc",
+    ".asciidoc": "asciidoc",
+    # Data / config
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".json": "json",
+    ".toml": "toml",
+    ".ini": "ini",
+    ".xml": "xml",
+    ".html": "html",
+    ".htm": "html",
+    # Bibliography / citations
+    ".bib": "bibtex",
+    ".cff": "yaml",
+    ".ris": "",
+    ".nbib": "",
+    # Tabular / plain
+    ".csv": "csv",
+    ".tsv": "",
+    ".txt": "",
+}
 
 # Prompt templates
 INITIAL_RESEARCH_TEMPLATE = """Act as an expert research analyst using the Gemini Deep Research agent. Plan, search, read, and synthesize multiple sources to answer the following research query.
@@ -26,9 +62,11 @@ INITIAL_RESEARCH_TEMPLATE = """Act as an expert research analyst using the Gemin
 
 ## Constraints
 {constraints}
-
+{seeds}
 ## Output Format
-Produce a single, self-contained Markdown document with these sections:
+Begin the document with a single top-level `# Title` heading. The title must be a single descriptive phrase, 5–10 words long, suitable for use as a filename. Do not use colons (`:`), em-dashes (`—`), parentheses, or any subtitle separator. Prefer "A Survey of the Nash Program" over "The Nash Program: A Survey".
+
+After the title, include these sections:
 1. Executive Summary (2-3 paragraphs)
 2. Key Questions Addressed
 3. Main Findings (with subsections as needed)
@@ -56,12 +94,13 @@ The user has provided the following feedback:
 ---
 {feedback}
 ---
-
+{seeds}
 Please produce a complete revised Markdown report that:
 1. Incorporates this feedback
 2. Preserves correct facts and citations from the original
 3. Maintains the same document structure unless the feedback requests changes
 4. Clearly indicates any new research or sources added
+5. Keeps the original `# Title` heading at the top (or, if the feedback materially changes the subject, replaces it with a new single-phrase title — no colons, em-dashes, or parentheses)
 
 Output only the revised report in Markdown format.
 """
@@ -75,12 +114,13 @@ The user has provided the following feedback:
 
 Additionally, apply these updated constraints to the revised report:
 {constraints}
-
+{seeds}
 Please produce a complete revised Markdown report that:
 1. Incorporates the feedback above
 2. Applies the updated constraints
 3. Preserves correct facts and citations from the original
 4. Clearly indicates any new research or sources added
+5. Keeps the original `# Title` heading at the top (or, if the feedback materially changes the subject, replaces it with a new single-phrase title — no colons, em-dashes, or parentheses)
 
 Output only the revised report in Markdown format.
 """
@@ -98,6 +138,7 @@ class ResearchWorkflow:
         topic: str,
         questions: Optional[list[str]] = None,
         constraints: Optional[ResearchConstraints] = None,
+        seed_paths: Optional[list[Path]] = None,
         *,
         on_status: Optional[Callable[[str], None]] = None,
         on_debug: Optional[DebugCallback] = None,
@@ -109,15 +150,21 @@ class ResearchWorkflow:
         """
         constraints = constraints or ResearchConstraints()
 
-        # Build prompt from template
-        prompt = self._build_initial_prompt(topic, questions, constraints)
+        # Stage seed files into the run directory (need run_id first)
+        run = ResearchRun.new("")
+        seed_filenames: list[str] = []
+        if seed_paths:
+            seed_filenames = self._storage.save_seeds(run.run_id, 1, seed_paths)
+        seeds = self._storage.load_seeds(run.run_id, 1) if seed_filenames else []
 
-        # Create run object
-        run = ResearchRun.new(prompt)
+        # Build prompt from template (now with seed contents)
+        prompt = self._build_initial_prompt(topic, questions, constraints, seeds)
+        run.prompt_text = prompt
         run.status = InteractionStatus.RUNNING
         run.inputs = RunInputs(
             topic=topic, constraints=constraints, questions=questions
         )
+        run.seed_filenames = seed_filenames or None
 
         # Save initial state
         self._storage.save_run(run)
@@ -139,6 +186,7 @@ class ResearchWorkflow:
         run_id: str,
         feedback: str,
         constraints: Optional[ResearchConstraints] = None,
+        seed_paths: Optional[list[Path]] = None,
         *,
         on_status: Optional[Callable[[str], None]] = None,
         on_debug: Optional[DebugCallback] = None,
@@ -159,18 +207,32 @@ class ResearchWorkflow:
                 f"Cannot revise incomplete run (status: {previous_run.status})"
             )
 
+        new_version = previous_run.version + 1
+
+        # Stage seed files for this revision (per-version, not inherited)
+        seed_filenames: list[str] = []
+        if seed_paths:
+            seed_filenames = self._storage.save_seeds(run_id, new_version, seed_paths)
+        seeds = self._storage.load_seeds(run_id, new_version) if seed_filenames else []
+        seeds_block = self._format_seeds(seeds)
+
         # Build revision prompt - include constraints if provided
         if constraints:
             constraints_text = self._format_constraints(constraints)
             revision_prompt = REVISION_WITH_CONSTRAINTS_TEMPLATE.format(
-                feedback=feedback, constraints=constraints_text
+                feedback=feedback,
+                constraints=constraints_text,
+                seeds=seeds_block,
             )
         else:
-            revision_prompt = REVISION_TEMPLATE.format(feedback=feedback)
+            revision_prompt = REVISION_TEMPLATE.format(
+                feedback=feedback, seeds=seeds_block
+            )
 
         # Create new run version
         run = previous_run.create_revision(feedback, revision_prompt)
         run.status = InteractionStatus.RUNNING
+        run.seed_filenames = seed_filenames or None
 
         # Save initial state
         self._storage.save_run(run)
@@ -260,6 +322,7 @@ class ResearchWorkflow:
         topic: str,
         questions: Optional[list[str]],
         constraints: ResearchConstraints,
+        seeds: Optional[list[SeedFile]] = None,
     ) -> str:
         """Build the initial research prompt from template."""
         if questions:
@@ -268,12 +331,45 @@ class ResearchWorkflow:
             questions_text = f"- What is {topic}?"
 
         constraints_text = self._format_constraints(constraints)
+        seeds_block = self._format_seeds(seeds or [])
 
         return INITIAL_RESEARCH_TEMPLATE.format(
             topic=topic,
             questions=questions_text,
             constraints=constraints_text,
+            seeds=seeds_block,
         )
+
+    def _format_seeds(self, seeds: list[SeedFile]) -> str:
+        """
+        Format seed files as a prompt section.
+
+        Returns an empty string when no seeds are provided. Otherwise returns
+        a leading blank line plus a `## Seed Documents` section in which each
+        seed appears under `### {filename}` inside a fenced code block.
+        """
+        if not seeds:
+            return ""
+
+        blocks: list[str] = [
+            "",
+            "## Seed Documents",
+            "",
+            "The user has provided the following source documents for reference. "
+            "Treat them as primary starting context, but still perform fresh "
+            "research to expand, verify, and cite independently.",
+            "",
+        ]
+        for seed in seeds:
+            ext = Path(seed.filename).suffix.lower()
+            fence_lang = EXT_TO_FENCE.get(ext, "")
+            blocks.append(f"### {seed.filename}")
+            blocks.append("")
+            blocks.append(f"```{fence_lang}")
+            blocks.append(seed.content.rstrip("\n"))
+            blocks.append("```")
+            blocks.append("")
+        return "\n".join(blocks)
 
     def _process_citations(
         self,

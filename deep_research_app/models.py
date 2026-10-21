@@ -59,6 +59,14 @@ class UsageMetadata:
 
 
 @dataclass
+class SeedFile:
+    """A seed document loaded from disk, ready to embed in a prompt."""
+
+    filename: str
+    content: str
+
+
+@dataclass
 class PollResult:
     """Result from polling an interaction."""
 
@@ -158,6 +166,7 @@ class ResearchRun:
     status: InteractionStatus = InteractionStatus.PENDING
     usage: Optional[UsageMetadata] = None
     inputs: Optional[RunInputs] = None
+    seed_filenames: Optional[list[str]] = None
 
     @classmethod
     def new(cls, prompt_text: str) -> "ResearchRun":
@@ -195,3 +204,4 @@ class RunMetadata:
     created_at: str
     versions: list[dict]
     latest_version: int
+    filename_stem: Optional[str] = None
