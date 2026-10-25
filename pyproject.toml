@@ -5,7 +5,7 @@ description = "A local client for Google Gemini deep research"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "google-genai>=1.55.0",
+    "google-genai>=2.31",
     "gradio>=6.1.0",
     "typer>=0.15.0",
     "rich>=13.0.0",

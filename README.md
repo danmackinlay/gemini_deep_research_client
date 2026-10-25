@@ -68,8 +68,8 @@ uv run deep-research new "topic" \
   --max-words 5000 \           # Maximum report length
   --focus "economics,policy"   # Comma-separated focus areas
 
-# Show thinking summaries during streaming
-uv run deep-research --show-thoughts new "topic"
+# Use the slower, more thorough Deep Research Max agent (~$3-7 vs ~$1-3 per task)
+uv run deep-research --max new "topic"
 ```
 
 ## Install into another project / run via `uvx`

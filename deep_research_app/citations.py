@@ -2,7 +2,6 @@
 
 import re
 from dataclasses import dataclass, field
-from typing import Optional
 
 import httpx
 
@@ -13,7 +12,7 @@ class SourceInfo:
 
     title: str
     url: str
-    final_url: Optional[str] = None  # Resolved from redirect
+    final_url: str | None = None  # Resolved from redirect
 
 
 @dataclass
@@ -170,7 +169,7 @@ def validate_citations(text: str, sources: dict[str, SourceInfo]) -> list[str]:
     return errors
 
 
-def resolve_redirect(url: str, timeout: float = 10.0) -> Optional[str]:
+def resolve_redirect(url: str, timeout: float = 10.0) -> str | None:
     """
     Follow grounding-api-redirect URLs to get final URL.
 

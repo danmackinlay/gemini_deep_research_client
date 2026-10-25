@@ -3,17 +3,18 @@
 import json
 import shutil
 import warnings
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from deep_research_app.config import get_settings
 from deep_research_app.models import (
-    ResearchRun,
-    RunMetadata,
-    RunInputs,
-    SeedFile,
     InteractionStatus,
+    ReportImage,
+    ResearchRun,
+    RunInputs,
+    RunMetadata,
+    SeedFile,
     UsageMetadata,
 )
 
@@ -21,7 +22,7 @@ from deep_research_app.models import (
 class RunStorage:
     """Manages persistence of research runs."""
 
-    def __init__(self, base_dir: Optional[Path] = None) -> None:
+    def __init__(self, base_dir: Path | None = None) -> None:
         self._base_dir = base_dir or get_settings().runs_dir
         self._base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -56,7 +57,7 @@ class RunStorage:
 
         return run_dir
 
-    def load_latest_run(self, run_id: str) -> Optional[ResearchRun]:
+    def load_latest_run(self, run_id: str) -> ResearchRun | None:
         """Load the latest version of a run."""
         meta = self.load_metadata(run_id)
         if not meta:
@@ -118,7 +119,7 @@ class RunStorage:
             seed_filenames=seed_filenames,
         )
 
-    def load_run_version(self, run_id: str, version: int) -> Optional[ResearchRun]:
+    def load_run_version(self, run_id: str, version: int) -> ResearchRun | None:
         """Load a specific version of a run."""
         meta = self.load_metadata(run_id)
         if not meta:
@@ -220,14 +221,7 @@ class RunStorage:
             "status": run.status.value,
             "feedback": run.feedback,
             "previous_interaction_id": run.previous_interaction_id,
-            "usage": {
-                "prompt_tokens": run.usage.prompt_tokens,
-                "output_tokens": run.usage.output_tokens,
-                "total_tokens": run.usage.total_tokens,
-                "thinking_tokens": run.usage.thinking_tokens,
-            }
-            if run.usage
-            else None,
+            "usage": asdict(run.usage) if run.usage else None,
             "inputs": run.inputs.to_dict() if run.inputs else None,
             "seeds": list(run.seed_filenames) if run.seed_filenames else [],
         }
@@ -246,7 +240,7 @@ class RunStorage:
 
         meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
-    def load_metadata(self, run_id: str) -> Optional[RunMetadata]:
+    def load_metadata(self, run_id: str) -> RunMetadata | None:
         """Load metadata for a run."""
         meta_path = self._base_dir / run_id / "meta.json"
         if not meta_path.exists():
@@ -255,7 +249,7 @@ class RunStorage:
         data = json.loads(meta_path.read_text(encoding="utf-8"))
         return RunMetadata(**data)
 
-    def set_filename_stem(self, run_id: str, stem: Optional[str]) -> None:
+    def set_filename_stem(self, run_id: str, stem: str | None) -> None:
         """Persist (or clear) a user-chosen download filename stem in meta.json."""
         meta_path = self._base_dir / run_id / "meta.json"
         if not meta_path.exists():
@@ -273,6 +267,21 @@ class RunStorage:
             version = meta.latest_version
         path = self._base_dir / run_id / f"report_v{version}.md"
         return path if path.exists() else None
+
+    @staticmethod
+    def figure_stem(version: int) -> str:
+        """Filename prefix for a version's figures, e.g. report_v2_fig1.png."""
+        return f"report_v{version}_fig"
+
+    def save_figures(self, run_id: str, images: list[ReportImage]) -> None:
+        """Write agent-generated figures next to the report that links them."""
+        run_dir = self.get_run_dir(run_id)
+        for image in images:
+            (run_dir / image.filename).write_bytes(image.data)
+
+    def get_figure_paths(self, run_id: str, version: int) -> list[Path]:
+        """Figures saved for a version (empty if none)."""
+        return sorted((self._base_dir / run_id).glob(f"{self.figure_stem(version)}*"))
 
     def save_sources(self, run_id: str, version: int, sources: dict) -> None:
         """Save sources.json for a version."""
@@ -293,7 +302,7 @@ class RunStorage:
 
         path.write_text(json.dumps(sources_dict, indent=2), encoding="utf-8")
 
-    def load_sources(self, run_id: str, version: int) -> Optional[dict]:
+    def load_sources(self, run_id: str, version: int) -> dict | None:
         """Load sources.json for a version."""
         path = self._base_dir / run_id / f"sources_v{version}.json"
         if not path.exists():

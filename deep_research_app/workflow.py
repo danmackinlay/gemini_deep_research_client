@@ -1,21 +1,21 @@
 """High-level research orchestration with prompt templates."""
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Optional, Callable
 
+from deep_research_app.citations import process_report
 from deep_research_app.deep_research import (
-    DeepResearchClient,
     DebugCallback,
+    DeepResearchClient,
 )
-from deep_research_app.storage import RunStorage
 from deep_research_app.models import (
-    ResearchRun,
+    InteractionStatus,
     ResearchConstraints,
+    ResearchRun,
     RunInputs,
     SeedFile,
-    InteractionStatus,
 )
-from deep_research_app.citations import process_report
+from deep_research_app.storage import RunStorage
 
 EXT_TO_FENCE = {
     # Markdown family
@@ -73,6 +73,7 @@ After the title, include these sections:
 4. Limitations and Open Questions
 
 Use Markdown tables where helpful for comparing data or sources.
+Include a chart or diagram where it materially clarifies a quantitative comparison, trend, or structure.
 Do not include commentary about your research process; output only the report.
 
 ## Citation Contract (must follow exactly)
@@ -129,19 +130,19 @@ Output only the revised report in Markdown format.
 class ResearchWorkflow:
     """Orchestrates research runs with polling-based execution."""
 
-    def __init__(self, storage: Optional[RunStorage] = None) -> None:
+    def __init__(self, storage: RunStorage | None = None) -> None:
         self._client = DeepResearchClient()
         self._storage = storage or RunStorage()
 
     def run_initial_research(
         self,
         topic: str,
-        questions: Optional[list[str]] = None,
-        constraints: Optional[ResearchConstraints] = None,
-        seed_paths: Optional[list[Path]] = None,
+        questions: list[str] | None = None,
+        constraints: ResearchConstraints | None = None,
+        seed_paths: list[Path] | None = None,
         *,
-        on_status: Optional[Callable[[str], None]] = None,
-        on_debug: Optional[DebugCallback] = None,
+        on_status: Callable[[str], None] | None = None,
+        on_debug: DebugCallback | None = None,
     ) -> ResearchRun:
         """
         Run initial research on a topic.
@@ -185,11 +186,11 @@ class ResearchWorkflow:
         self,
         run_id: str,
         feedback: str,
-        constraints: Optional[ResearchConstraints] = None,
-        seed_paths: Optional[list[Path]] = None,
+        constraints: ResearchConstraints | None = None,
+        seed_paths: list[Path] | None = None,
         *,
-        on_status: Optional[Callable[[str], None]] = None,
-        on_debug: Optional[DebugCallback] = None,
+        on_status: Callable[[str], None] | None = None,
+        on_debug: DebugCallback | None = None,
     ) -> ResearchRun:
         """
         Create a revision of an existing research run.
@@ -257,7 +258,7 @@ class ResearchWorkflow:
         self,
         run_id: str,
         *,
-        on_status: Optional[Callable[[str], None]] = None,
+        on_status: Callable[[str], None] | None = None,
     ) -> ResearchRun:
         """
         Resume polling for an incomplete run.
@@ -281,7 +282,7 @@ class ResearchWorkflow:
     def _poll_and_finalize(
         self,
         run: ResearchRun,
-        on_status: Optional[Callable[[str], None]],
+        on_status: Callable[[str], None] | None,
     ) -> ResearchRun:
         """Poll until completion and finalize the run."""
         if on_status:
@@ -290,9 +291,14 @@ class ResearchWorkflow:
         poll_result = self._client.poll_interaction(
             run.interaction_id,
             on_status=on_status,
+            figure_stem=self._storage.figure_stem(run.version),
         )
 
         if poll_result.status == InteractionStatus.COMPLETED:
+            if poll_result.images:
+                self._storage.save_figures(run.run_id, poll_result.images)
+                if on_status:
+                    on_status(f"Saved {len(poll_result.images)} figures")
             run.report_markdown = self._process_citations(
                 poll_result.final_markdown, run.run_id, run.version, on_status
             )
@@ -300,6 +306,7 @@ class ResearchWorkflow:
             run.usage = poll_result.usage
         else:
             run.status = poll_result.status
+            run.error = poll_result.error
 
         self._storage.save_run(run)
         return run
@@ -320,9 +327,9 @@ class ResearchWorkflow:
     def _build_initial_prompt(
         self,
         topic: str,
-        questions: Optional[list[str]],
+        questions: list[str] | None,
         constraints: ResearchConstraints,
-        seeds: Optional[list[SeedFile]] = None,
+        seeds: list[SeedFile] | None = None,
     ) -> str:
         """Build the initial research prompt from template."""
         if questions:
@@ -373,11 +380,11 @@ class ResearchWorkflow:
 
     def _process_citations(
         self,
-        report_text: Optional[str],
+        report_text: str | None,
         run_id: str,
         version: int,
-        on_status: Optional[Callable[[str], None]] = None,
-    ) -> Optional[str]:
+        on_status: Callable[[str], None] | None = None,
+    ) -> str | None:
         """Process citations in a report and save sources."""
         if not report_text:
             return report_text

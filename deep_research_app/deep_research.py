@@ -22,20 +22,72 @@ The workflow is now:
 This simplifies the codebase significantly while maintaining all functionality.
 """
 
+import base64
+import mimetypes
 import time
-from typing import Any, Optional, Callable
+from collections.abc import Callable
+from typing import Any
 
 from google import genai
 
 from deep_research_app.config import get_settings
 from deep_research_app.models import (
-    PollResult,
     InteractionStatus,
+    PollResult,
+    ReportImage,
     UsageMetadata,
 )
 
 # Type alias for debug callback: (chunk_dict) -> None
 DebugCallback = Callable[[dict[str, Any]], None]
+
+# API status -> our status. "incomplete" and "budget_exceeded" are terminal
+# failures. "requires_action" only arises with collaborative planning or
+# function calling, neither of which we enable, so it is deliberately absent.
+_STATUS_MAP = {
+    "queued": InteractionStatus.PENDING,
+    "in_progress": InteractionStatus.RUNNING,
+    "completed": InteractionStatus.COMPLETED,
+    "failed": InteractionStatus.FAILED,
+    "cancelled": InteractionStatus.CANCELLED,
+    "incomplete": InteractionStatus.FAILED,
+    "budget_exceeded": InteractionStatus.FAILED,
+}
+
+
+def _map_status(api_status: str) -> InteractionStatus:
+    assert api_status in _STATUS_MAP, f"Unexpected interaction status: {api_status!r}"
+    return _STATUS_MAP[api_status]
+
+
+def _report_content(
+    interaction, figure_stem: str = "fig"
+) -> tuple[str | None, list[ReportImage]]:
+    """Extract the report from the final model_output step.
+
+    Images become `![Figure N]({figure_stem}N.ext)` links at their position in
+    the text; the image bytes are returned for the caller to save alongside.
+    """
+    outputs = [s for s in interaction.steps or [] if s.type == "model_output"]
+    if not outputs:
+        return None, []
+    parts: list[str] = []
+    images: list[ReportImage] = []
+    for c in outputs[-1].content or []:
+        if c.type == "text":
+            parts.append(c.text)
+        elif c.type == "image":
+            assert c.data, "Image content without inline data is unsupported"
+            ext = mimetypes.guess_extension(c.mime_type)
+            assert ext, f"Unknown image mime type: {c.mime_type!r}"
+            n = len(images) + 1
+            images.append(
+                ReportImage(f"{figure_stem}{n}{ext}", base64.b64decode(c.data))
+            )
+            parts.append(f"![Figure {n}]({images[-1].filename})")
+        else:
+            raise AssertionError(f"Unexpected report content type: {c.type!r}")
+    return "\n\n".join(parts) or None, images
 
 
 class DeepResearchClient:
@@ -45,30 +97,42 @@ class DeepResearchClient:
         settings = get_settings()
         self._client = genai.Client(api_key=settings.gemini_api_key)
         self._agent = settings.agent_name
-        self._thinking_summaries = settings.thinking_summaries
+        self._agent_config = {
+            "type": "deep-research",
+            "thinking_summaries": settings.thinking_summaries,
+            "visualization": settings.visualization,
+        }
 
-    def _extract_usage(self, interaction) -> Optional[UsageMetadata]:
+    def _extract_usage(self, interaction) -> UsageMetadata | None:
         """Extract UsageMetadata from an interaction object.
 
         The API may delay populating the usage field even after marking
         an interaction as completed. This helper centralizes the extraction
         logic for use in both polling and status checks.
         """
-        if not hasattr(interaction, "usage") or not interaction.usage:
-            return None
         u = interaction.usage
+        if not u:
+            return None
+        searches = sum(
+            g.count or 0
+            for g in u.grounding_tool_count or []
+            if g.type == "google_search"
+        )
         return UsageMetadata(
-            prompt_tokens=getattr(u, "total_input_tokens", 0) or 0,
-            output_tokens=getattr(u, "total_output_tokens", 0) or 0,
-            total_tokens=getattr(u, "total_tokens", 0) or 0,
-            thinking_tokens=getattr(u, "total_reasoning_tokens", 0) or 0,
+            prompt_tokens=u.total_input_tokens or 0,
+            output_tokens=u.total_output_tokens or 0,
+            total_tokens=u.total_tokens or 0,
+            thinking_tokens=u.total_thought_tokens or 0,
+            cached_tokens=u.total_cached_tokens or 0,
+            tool_use_tokens=u.total_tool_use_tokens or 0,
+            search_queries=searches,
         )
 
     def create_interaction(
         self,
         prompt: str,
         *,
-        on_debug: Optional[DebugCallback] = None,
+        on_debug: DebugCallback | None = None,
     ) -> str:
         """
         Create a new Deep Research interaction.
@@ -88,10 +152,7 @@ class DeepResearchClient:
             agent=self._agent,
             background=True,
             stream=False,
-            agent_config={
-                "type": "deep-research",
-                "thinking_summaries": self._thinking_summaries,
-            },
+            agent_config=self._agent_config,
         )
 
         if on_debug:
@@ -104,7 +165,7 @@ class DeepResearchClient:
         prompt: str,
         previous_interaction_id: str,
         *,
-        on_debug: Optional[DebugCallback] = None,
+        on_debug: DebugCallback | None = None,
     ) -> str:
         """
         Create a new interaction with context from a previous one.
@@ -125,10 +186,7 @@ class DeepResearchClient:
             background=True,
             stream=False,
             previous_interaction_id=previous_interaction_id,
-            agent_config={
-                "type": "deep-research",
-                "thinking_summaries": self._thinking_summaries,
-            },
+            agent_config=self._agent_config,
         )
 
         if on_debug:
@@ -146,9 +204,10 @@ class DeepResearchClient:
         self,
         interaction_id: str,
         *,
-        interval: Optional[float] = None,
-        timeout: Optional[float] = None,
-        on_status: Optional[Callable[[str], None]] = None,
+        interval: float | None = None,
+        timeout: float | None = None,
+        on_status: Callable[[str], None] | None = None,
+        figure_stem: str = "fig",
     ) -> PollResult:
         """
         Poll an interaction until completion or timeout.
@@ -158,9 +217,10 @@ class DeepResearchClient:
             interval: Seconds between polls (default from settings)
             timeout: Max seconds to wait (default from settings)
             on_status: Optional callback for status updates
+            figure_stem: Filename prefix for figures linked from the report
 
         Returns:
-            PollResult with status, final_markdown, and usage
+            PollResult with status, final_markdown, images, and usage
         """
         settings = get_settings()
         interval = interval or settings.default_poll_interval
@@ -171,37 +231,29 @@ class DeepResearchClient:
             try:
                 interaction = self._client.interactions.get(interaction_id)
                 status = interaction.status
+                mapped = _map_status(status)
 
                 if on_status:
                     elapsed = time.time() - start_time
                     on_status(f"Status: {status} ({elapsed:.0f}s)")
 
-                if status == "completed":
-                    final_text = None
-                    if interaction.outputs:
-                        final_text = interaction.outputs[-1].text
-
-                    # Extract usage if available
-                    # Note: Deep Research agent does not currently return usage data
-                    usage = self._extract_usage(interaction)
-
+                if mapped == InteractionStatus.COMPLETED:
+                    text, images = _report_content(interaction, figure_stem)
                     return PollResult(
                         interaction_id=interaction_id,
                         status=InteractionStatus.COMPLETED,
-                        final_markdown=final_text,
-                        usage=usage,
+                        final_markdown=text,
+                        usage=self._extract_usage(interaction),
+                        images=images,
                     )
 
-                if status in ("failed", "cancelled"):
+                if mapped in (InteractionStatus.FAILED, InteractionStatus.CANCELLED):
+                    detail = f": {interaction.error}" if interaction.error else ""
                     return PollResult(
                         interaction_id=interaction_id,
-                        status=(
-                            InteractionStatus.FAILED
-                            if status == "failed"
-                            else InteractionStatus.CANCELLED
-                        ),
+                        status=mapped,
                         final_markdown=None,
-                        error=f"Interaction {status}",
+                        error=f"Interaction {status}{detail}",
                     )
 
                 if timeout and (time.time() - start_time) > timeout:
@@ -224,28 +276,18 @@ class DeepResearchClient:
 
     def get_interaction_status(
         self, interaction_id: str
-    ) -> tuple[InteractionStatus, Optional[str], Optional[UsageMetadata]]:
+    ) -> tuple[InteractionStatus, str | None, UsageMetadata | None]:
         """
         Get current status of an interaction (single poll).
 
         Returns (status, final_text_if_complete, usage_if_available)
         """
         interaction = self._client.interactions.get(interaction_id)
-        status_str = interaction.status
-
-        status_map = {
-            "pending": InteractionStatus.PENDING,
-            "in_progress": InteractionStatus.RUNNING,  # API uses this
-            "running": InteractionStatus.RUNNING,
-            "completed": InteractionStatus.COMPLETED,
-            "failed": InteractionStatus.FAILED,
-            "cancelled": InteractionStatus.CANCELLED,
-        }
-        status = status_map.get(status_str, InteractionStatus.RUNNING)
+        status = _map_status(interaction.status)
 
         final_text = None
-        if status == InteractionStatus.COMPLETED and interaction.outputs:
-            final_text = interaction.outputs[-1].text
+        if status == InteractionStatus.COMPLETED:
+            final_text, _ = _report_content(interaction)
 
         usage = self._extract_usage(interaction)
 

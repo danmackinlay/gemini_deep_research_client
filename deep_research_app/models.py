@@ -1,10 +1,9 @@
 """Data models for the Deep Research client."""
 
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Optional
-import uuid
 
 
 class InteractionStatus(str, Enum):
@@ -18,44 +17,67 @@ class InteractionStatus(str, Enum):
     INTERRUPTED = "interrupted"
 
 
+# Gemini 3.1 Pro list rates (prompts <= 200k), USD, as of Oct 2026.
+# Both Deep Research agents run on 3.1 Pro; update these if the agent changes.
+# See: https://ai.google.dev/gemini-api/docs/pricing
+PRICE_PER_M_INPUT = 2.0
+PRICE_PER_M_CACHED_INPUT = 0.20
+PRICE_PER_M_OUTPUT = 12.0  # also applies to thought tokens
+PRICE_PER_SEARCH = 14.0 / 1000
+
+
 @dataclass
 class UsageMetadata:
-    """Token usage information from API response."""
+    """Token usage reported on a completed interaction.
+
+    total_tokens = prompt + output + thinking + tool_use. cached_tokens is a
+    subset of prompt_tokens.
+    """
 
     prompt_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
     thinking_tokens: int = 0
+    cached_tokens: int = 0
+    tool_use_tokens: int = 0
+    search_queries: int = 0
 
-    def calculate_cost(
-        self,
-        price_per_m_input: float = 2.0,
-        price_per_m_output: float = 12.0,
-    ) -> float:
-        """Calculate cost in dollars based on token usage."""
-        return (self.prompt_tokens / 1_000_000) * price_per_m_input + (
-            self.output_tokens / 1_000_000
-        ) * price_per_m_output
+    def calculate_cost(self) -> float:
+        """Estimate cost in dollars at list rates.
+
+        Upper bound: search queries are all charged, although the first 5,000
+        per month (shared across Gemini 3+ models) are free.
+        """
+        # FIXME: tool_use_tokens are billed at the input rate as a guess; the
+        # pricing page says search-retrieved tokens are excluded but URL-context
+        # tokens are not, and usage does not split them.
+        uncached = self.prompt_tokens - self.cached_tokens
+        assert uncached >= 0, f"cached_tokens exceeds prompt_tokens: {self}"
+        return (
+            (uncached + self.tool_use_tokens) / 1e6 * PRICE_PER_M_INPUT
+            + self.cached_tokens / 1e6 * PRICE_PER_M_CACHED_INPUT
+            + (self.output_tokens + self.thinking_tokens) / 1e6 * PRICE_PER_M_OUTPUT
+            + self.search_queries * PRICE_PER_SEARCH
+        )
 
     def format_cost(self, include_total: bool = True) -> str:
         """Format usage with cost for display."""
         cost = self.calculate_cost()
+        tokens = (
+            f"{self.prompt_tokens:,} in ({self.cached_tokens:,} cached) / "
+            f"{self.output_tokens + self.thinking_tokens:,} out+thought"
+        )
         if include_total:
             return (
-                f"Tokens: {self.prompt_tokens:,} in / {self.output_tokens:,} out / "
-                f"{self.total_tokens:,} total | Cost: ${cost:.4f}"
+                f"Tokens: {tokens} / {self.total_tokens:,} total | "
+                f"{self.search_queries} searches | Cost: ~${cost:.2f}"
             )
-        return f"{self.prompt_tokens:,} in / {self.output_tokens:,} out | ${cost:.4f}"
+        return f"{tokens} | {self.search_queries} searches | ${cost:.2f}"
 
     @classmethod
     def from_dict(cls, data: dict) -> "UsageMetadata":
         """Create UsageMetadata from a dict (e.g., from meta.json)."""
-        return cls(
-            prompt_tokens=data.get("prompt_tokens", 0),
-            output_tokens=data.get("output_tokens", 0),
-            total_tokens=data.get("total_tokens", 0),
-            thinking_tokens=data.get("thinking_tokens", 0),
-        )
+        return cls(**data)
 
 
 @dataclass
@@ -67,24 +89,33 @@ class SeedFile:
 
 
 @dataclass
+class ReportImage:
+    """An agent-generated figure, linked from the report markdown by filename."""
+
+    filename: str
+    data: bytes
+
+
+@dataclass
 class PollResult:
     """Result from polling an interaction."""
 
     interaction_id: str
     status: InteractionStatus
-    final_markdown: Optional[str]
-    error: Optional[str] = None
-    usage: Optional[UsageMetadata] = None
+    final_markdown: str | None
+    error: str | None = None
+    usage: UsageMetadata | None = None
+    images: list[ReportImage] = field(default_factory=list)
 
 
 @dataclass
 class ResearchConstraints:
     """Constraints for a research run."""
 
-    timeframe: Optional[str] = None
-    region: Optional[str] = None
-    max_words: Optional[int] = None
-    focus_areas: Optional[list[str]] = None
+    timeframe: str | None = None
+    region: str | None = None
+    max_words: int | None = None
+    focus_areas: list[str] | None = None
 
     def to_dict(self) -> dict:
         """Serialize to dict for JSON storage."""
@@ -111,7 +142,7 @@ class ResearchConstraints:
         *,
         timeframe: str | None,
         region: str | None,
-        max_words: int | float | None,
+        max_words: float | None,
         focus: str | None,
     ) -> "ResearchConstraints":
         """Create from raw user input with normalization."""
@@ -131,7 +162,7 @@ class RunInputs:
 
     topic: str
     constraints: ResearchConstraints
-    questions: Optional[list[str]] = None
+    questions: list[str] | None = None
 
     def to_dict(self) -> dict:
         """Serialize to dict for JSON storage."""
@@ -159,14 +190,15 @@ class ResearchRun:
     interaction_id: str
     version: int
     prompt_text: str
-    report_markdown: Optional[str]
+    report_markdown: str | None
     created_at: datetime
-    feedback: Optional[str] = None
-    previous_interaction_id: Optional[str] = None
+    feedback: str | None = None
+    previous_interaction_id: str | None = None
     status: InteractionStatus = InteractionStatus.PENDING
-    usage: Optional[UsageMetadata] = None
-    inputs: Optional[RunInputs] = None
-    seed_filenames: Optional[list[str]] = None
+    usage: UsageMetadata | None = None
+    inputs: RunInputs | None = None
+    seed_filenames: list[str] | None = None
+    error: str | None = None  # why polling stopped short; not persisted
 
     @classmethod
     def new(cls, prompt_text: str) -> "ResearchRun":
@@ -204,4 +236,4 @@ class RunMetadata:
     created_at: str
     versions: list[dict]
     latest_version: int
-    filename_stem: Optional[str] = None
+    filename_stem: str | None = None

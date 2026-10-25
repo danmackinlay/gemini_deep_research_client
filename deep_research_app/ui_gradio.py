@@ -3,14 +3,19 @@
 import re
 import shutil
 import tempfile
+import threading
+import time
+import zipfile
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator
+from urllib.parse import quote
 
 import gradio as gr
 
-from deep_research_app.workflow import ResearchWorkflow
-from deep_research_app.storage import RunStorage
+from deep_research_app.config import get_settings
 from deep_research_app.models import InteractionStatus, ResearchConstraints
+from deep_research_app.storage import RunStorage
+from deep_research_app.workflow import ResearchWorkflow
 
 
 def _slugify(text: str, max_len: int = 60) -> str:
@@ -31,17 +36,50 @@ def _extract_title(markdown: str | None) -> str | None:
     return None
 
 
-def _download_alias(report_path: Path, stem: str, version: int) -> str:
+def _download_button(
+    storage: RunStorage, run_id: str, version: int, stem: str
+) -> gr.DownloadButton:
     """
-    Return a path whose *basename* is `{stem}_v{N}.md`, suitable for
-    `gr.DownloadButton(value=...)`. Copies the report to a fresh temp dir;
-    Gradio's file cache handles cleanup.
+    Download button for a report: `{stem}_v{N}.md`, or `{stem}_v{N}.zip`
+    holding the report plus its figures when it has any. Files are copied to
+    a fresh temp dir; Gradio's file cache handles cleanup.
     """
-    alias_name = f"{stem or 'report'}_v{version}.md"
+    report_path = storage.get_report_path(run_id, version)
+    if not report_path:
+        return gr.DownloadButton(visible=False)
+    name = f"{stem or 'report'}_v{version}"
     tmp_dir = Path(tempfile.mkdtemp(prefix="deep-research-dl-"))
-    alias_path = tmp_dir / alias_name
-    shutil.copy2(report_path, alias_path)
-    return str(alias_path)
+    figures = storage.get_figure_paths(run_id, version)
+    if not figures:
+        path = tmp_dir / f"{name}.md"
+        shutil.copy2(report_path, path)
+        return gr.DownloadButton("Download Report (.md)", value=str(path), visible=True)
+    path = tmp_dir / f"{name}.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.write(report_path, f"{name}/{name}.md")
+        for fig in figures:
+            zf.write(fig, f"{name}/{fig.name}")
+    return gr.DownloadButton(
+        f"Download Report + {len(figures)} figure{'s' * (len(figures) > 1)} (.zip)",
+        value=str(path),
+        visible=True,
+    )
+
+
+_FIGURE_LINK = re.compile(r"(!\[[^\]]*\]\()(report_v\d+_fig\d+\.\w+)\)")
+
+
+def _display_markdown(storage: RunStorage, run_id: str, markdown: str) -> str:
+    """Point relative figure links at Gradio's file route so they render."""
+    run_dir = storage.get_run_dir(run_id).resolve()
+    return _FIGURE_LINK.sub(
+        lambda m: f"{m[1]}/gradio_api/file={quote(str(run_dir / m[2]))})", markdown
+    )
+
+
+def _format_elapsed(seconds: float) -> str:
+    m, s = divmod(int(seconds), 60)
+    return f"{m}m {s:02d}s"
 
 
 def _resolve_filename_stem(
@@ -232,6 +270,9 @@ def create_ui() -> gr.Blocks:
             inputs = run.inputs
             topic = inputs.topic if inputs else ""
             constraints = inputs.constraints if inputs else None
+            stem = _resolve_filename_stem(
+                storage, run.run_id, report_markdown=run.report_markdown, topic=topic
+            )
 
             return {
                 mode_state: "REVISION",
@@ -249,33 +290,14 @@ def create_ui() -> gr.Blocks:
                 seeds_input: None,
                 feedback_input: gr.Textbox(visible=True),
                 action_btn: gr.Button(value="Revise Report"),
-                report_output: run.report_markdown or "No report available",
+                report_output: _display_markdown(
+                    storage, run.run_id, run.report_markdown or "No report available"
+                ),
                 report_source: run.report_markdown or "",
                 status_output: "",
                 cost_output: "",
-                filename_input: _resolve_filename_stem(
-                    storage,
-                    run.run_id,
-                    report_markdown=run.report_markdown,
-                    topic=topic,
-                ),
-                download_btn: (
-                    gr.DownloadButton(
-                        value=_download_alias(
-                            storage.get_report_path(run.run_id, run.version),
-                            _resolve_filename_stem(
-                                storage,
-                                run.run_id,
-                                report_markdown=run.report_markdown,
-                                topic=topic,
-                            ),
-                            run.version,
-                        ),
-                        visible=True,
-                    )
-                    if storage.get_report_path(run.run_id, run.version)
-                    else gr.DownloadButton(visible=False)
-                ),
+                filename_input: stem,
+                download_btn: _download_button(storage, run.run_id, run.version, stem),
             }
 
         def reset_to_new() -> dict:
@@ -313,29 +335,31 @@ def create_ui() -> gr.Blocks:
             feedback: str,
             seeds: list | None,
         ) -> Generator:
-            """Run new research or revision based on mode."""
-            if mode == "REVISION" and loaded_run_id:
-                if not feedback.strip():
-                    yield {
-                        status_output: "Error: Please enter revision feedback",
-                        run_id_output: "",
-                        report_output: "",
-                        report_source: "",
-                        cost_output: "",
-                        download_btn: gr.DownloadButton(visible=False),
-                    }
-                    return
-            else:
-                if not topic.strip():
-                    yield {
-                        status_output: "Error: Please enter a topic",
-                        run_id_output: "",
-                        report_output: "",
-                        report_source: "",
-                        cost_output: "",
-                        download_btn: gr.DownloadButton(visible=False),
-                    }
-                    return
+            """Run new research or revision based on mode.
+
+            The workflow blocks for minutes, so it runs on a worker thread
+            while this generator streams elapsed-time status updates.
+            """
+            revising = mode == "REVISION" and bool(loaded_run_id)
+            idle_controls = {
+                action_btn: gr.Button(
+                    value="Revise Report" if revising else "Start Research",
+                    interactive=True,
+                ),
+                load_btn: gr.Button(interactive=True),
+                new_btn: gr.Button(interactive=True),
+            }
+
+            def fail(message: str) -> dict:
+                gr.Warning(message)
+                return {status_output: f"Error: {message}", **idle_controls}
+
+            if revising and not feedback.strip():
+                yield fail("Please enter revision feedback")
+                return
+            if not revising and not topic.strip():
+                yield fail("Please enter a topic")
+                return
 
             workflow = ResearchWorkflow()
 
@@ -353,76 +377,104 @@ def create_ui() -> gr.Blocks:
                 path = getattr(f, "name", f)
                 seed_paths.append(Path(path))
 
-            # Show "in progress" while polling
+            phase = ["Starting"]
+
+            def on_status(message: str) -> None:
+                # Drop the client's own elapsed counter; we show ours
+                phase[0] = re.sub(r" \(\d+s\)$", "", message)
+
+            outcome: dict = {}
+
+            def work() -> None:
+                try:
+                    if revising:
+                        outcome["run"] = workflow.revise_research(
+                            run_id=loaded_run_id,
+                            feedback=feedback.strip(),
+                            constraints=constraints,
+                            seed_paths=seed_paths or None,
+                            on_status=on_status,
+                        )
+                    else:
+                        outcome["run"] = workflow.run_initial_research(
+                            topic=topic,
+                            constraints=constraints,
+                            seed_paths=seed_paths or None,
+                            on_status=on_status,
+                        )
+                except Exception as e:
+                    outcome["error"] = e
+
+            # Daemon thread: if the browser disconnects the run still finishes
+            # and is saved, and shows up under History.
+            worker = threading.Thread(target=work, daemon=True)
+            started = time.monotonic()
+            worker.start()
+
             yield {
-                status_output: "Running... (this may take several minutes)",
+                action_btn: gr.Button(value="Researching…", interactive=False),
+                load_btn: gr.Button(interactive=False),
+                new_btn: gr.Button(interactive=False),
                 run_id_output: "",
                 report_output: "",
                 report_source: "",
                 cost_output: "",
                 download_btn: gr.DownloadButton(visible=False),
             }
+            while worker.is_alive():
+                elapsed = _format_elapsed(time.monotonic() - started)
+                yield {
+                    status_output: f"Running {elapsed} (usually 5–20 min, max 60) · "
+                    f"{phase[0]}"
+                }
+                worker.join(timeout=2)
 
-            try:
-                if mode == "REVISION" and loaded_run_id:
-                    run = workflow.revise_research(
-                        run_id=loaded_run_id,
-                        feedback=feedback.strip(),
-                        constraints=constraints,
-                        seed_paths=seed_paths or None,
-                    )
-                else:
-                    run = workflow.run_initial_research(
-                        topic=topic,
-                        constraints=constraints,
-                        seed_paths=seed_paths or None,
-                    )
+            if "error" in outcome:
+                yield fail(str(outcome["error"]))
+                return
 
-                report_text = run.report_markdown or "No report generated"
-                download_path = storage.get_report_path(run.run_id, run.version)
-                effective_topic = run.inputs.topic if run.inputs else topic
-                stem = _resolve_filename_stem(
-                    storage,
-                    run.run_id,
-                    report_markdown=run.report_markdown,
-                    topic=effective_topic,
+            run = outcome["run"]
+            if run.status == InteractionStatus.RUNNING:
+                # Poll timeout: the agent may still finish server-side
+                yield fail(
+                    f"{run.error}. Run {run.run_id} may still finish; "
+                    f"check later with: deep-research resume {run.run_id}"
                 )
+                return
+            if run.status != InteractionStatus.COMPLETED:
+                yield fail(run.error or f"Research {run.status.value}")
+                return
 
-                # Auto-transition into REVISION mode for the just-finished run.
-                yield {
-                    status_output: run.status.value,
-                    run_id_output: run.run_id,
-                    report_output: report_text,
-                    report_source: report_text,
-                    cost_output: run.usage.format_cost(include_total=False)
-                    if run.usage
-                    else "",
-                    filename_input: stem,
-                    download_btn: (
-                        gr.DownloadButton(
-                            value=_download_alias(download_path, stem, run.version),
-                            visible=True,
-                        )
-                        if download_path
-                        else gr.DownloadButton(visible=False)
-                    ),
-                    mode_state: "REVISION",
-                    loaded_run_id_state: run.run_id,
-                    mode_indicator: f"Mode: Revising run {run.run_id} (v{run.version})",
-                    feedback_input: gr.Textbox(value="", visible=True),
-                    action_btn: gr.Button(value="Revise Report"),
-                    topic_input: gr.Textbox(value=effective_topic, interactive=False),
-                }
+            elapsed = _format_elapsed(time.monotonic() - started)
+            gr.Info(f"Research completed in {elapsed}")
+            report_text = run.report_markdown or "No report generated"
+            effective_topic = run.inputs.topic if run.inputs else topic
+            stem = _resolve_filename_stem(
+                storage,
+                run.run_id,
+                report_markdown=run.report_markdown,
+                topic=effective_topic,
+            )
 
-            except Exception as e:
-                yield {
-                    status_output: f"Error: {e}",
-                    run_id_output: "",
-                    report_output: "",
-                    report_source: "",
-                    cost_output: "",
-                    download_btn: gr.DownloadButton(visible=False),
-                }
+            # Auto-transition into REVISION mode for the just-finished run.
+            yield {
+                **idle_controls,
+                status_output: f"Completed in {elapsed}",
+                run_id_output: run.run_id,
+                report_output: _display_markdown(storage, run.run_id, report_text),
+                report_source: report_text,
+                cost_output: run.usage.format_cost(include_total=False)
+                if run.usage
+                else "",
+                filename_input: stem,
+                download_btn: _download_button(storage, run.run_id, run.version, stem),
+                mode_state: "REVISION",
+                loaded_run_id_state: run.run_id,
+                mode_indicator: f"Mode: Revising run {run.run_id} (v{run.version})",
+                feedback_input: gr.Textbox(value="", visible=True),
+                action_btn: gr.Button(value="Revise Report", interactive=True),
+                topic_input: gr.Textbox(value=effective_topic, interactive=False),
+            }
 
         def refresh_runs() -> list[list]:
             """Refresh the runs table."""
@@ -471,13 +523,8 @@ def create_ui() -> gr.Blocks:
             meta = storage.load_metadata(run_id)
             if not meta:
                 return gr.DownloadButton(visible=False)
-            version = meta.latest_version
-            report_path = storage.get_report_path(run_id, version)
-            if not report_path:
-                return gr.DownloadButton(visible=False)
-            return gr.DownloadButton(
-                value=_download_alias(report_path, new_stem or "report", version),
-                visible=True,
+            return _download_button(
+                storage, run_id, meta.latest_version, new_stem or "report"
             )
 
         # Wire up events
@@ -557,7 +604,12 @@ def create_ui() -> gr.Blocks:
                 feedback_input,
                 action_btn,
                 topic_input,
+                load_btn,
+                new_btn,
             ],
+            # Our status box reports progress; Gradio's default highlights
+            # every output component for the whole run, which reads as an error.
+            show_progress="hidden",
         )
 
         filename_input.change(
@@ -606,7 +658,8 @@ def create_ui() -> gr.Blocks:
 def launch() -> None:
     """Launch the Gradio interface."""
     demo = create_ui()
-    demo.launch()
+    # Figures are served from the runs directory
+    demo.launch(allowed_paths=[str(get_settings().runs_dir.resolve())])
 
 
 if __name__ == "__main__":

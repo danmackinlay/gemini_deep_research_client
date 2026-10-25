@@ -2,21 +2,22 @@
 
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import typer
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 
-from deep_research_app.workflow import ResearchWorkflow
-from deep_research_app.storage import RunStorage
+from deep_research_app.config import DEEP_RESEARCH_MAX_AGENT, get_settings
 from deep_research_app.deep_research import DeepResearchClient
 from deep_research_app.models import (
     InteractionStatus,
-    UsageMetadata,
     ResearchConstraints,
+    UsageMetadata,
 )
+from deep_research_app.storage import RunStorage
+from deep_research_app.workflow import ResearchWorkflow
 
 app = typer.Typer(
     name="deep-research",
@@ -36,39 +37,46 @@ def main_callback(
         "--debug-chunks",
         help="Log raw API data to debug_chunks.jsonl for debugging",
     ),
+    max_agent: bool = typer.Option(
+        False,
+        "--max",
+        help=f"Use {DEEP_RESEARCH_MAX_AGENT} (slower, more thorough, ~2-3x cost)",
+    ),
 ) -> None:
     """Global options for deep-research commands."""
     global _debug_chunks
     _debug_chunks = debug_chunks
+    if max_agent:
+        get_settings().agent_name = DEEP_RESEARCH_MAX_AGENT
 
 
 @app.command("new")
 def new_research(
     topic: str = typer.Argument(..., help="Research topic or question"),
-    timeframe: Optional[str] = typer.Option(
+    timeframe: str | None = typer.Option(
         None,
         "--timeframe",
         "-f",
         help="Time period constraint (e.g., '2020-2024')",
     ),
-    region: Optional[str] = typer.Option(
+    region: str | None = typer.Option(
         None,
         "--region",
         "-r",
         help="Geographic focus",
     ),
-    max_words: Optional[int] = typer.Option(
+    max_words: int | None = typer.Option(
         None,
         "--max-words",
         "-w",
         help="Maximum report length in words",
     ),
-    focus: Optional[str] = typer.Option(
+    focus: str | None = typer.Option(
         None,
         "--focus",
         help="Comma-separated focus areas",
     ),
-    seed: Optional[list[Path]] = typer.Option(
+    seed: list[Path] | None = typer.Option(
         None,
         "--seed",
         "-s",
@@ -137,7 +145,9 @@ def new_research(
             console.print("\n[yellow]Research interrupted.[/yellow]")
             console.print(f"Run `deep-research resume {run.run_id}` to resume polling.")
         else:
-            console.print(f"\n[red]Research ended with status: {run.status}[/red]")
+            console.print(
+                f"\n[red]Research ended with status: {run.status.value}[/red] {run.error or ''}"
+            )
 
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted by user.[/yellow]")
@@ -148,13 +158,13 @@ def new_research(
 @app.command("revise")
 def revise_research(
     run_id: str = typer.Argument(..., help="Run ID to revise"),
-    feedback: Optional[str] = typer.Option(
+    feedback: str | None = typer.Option(
         None,
         "--feedback",
         "-m",
         help="Feedback for revision (or enter interactively)",
     ),
-    seed: Optional[list[Path]] = typer.Option(
+    seed: list[Path] | None = typer.Option(
         None,
         "--seed",
         "-s",
@@ -220,7 +230,8 @@ def revise_research(
                 console.print(f"[dim]{revised_run.usage.format_cost()}[/dim]")
         else:
             console.print(
-                f"\n[red]Revision ended with status: {revised_run.status}[/red]"
+                f"\n[red]Revision ended with status: {revised_run.status.value}[/red] "
+                f"{revised_run.error or ''}"
             )
 
     except KeyboardInterrupt:
@@ -234,7 +245,7 @@ def revise_research(
 @app.command("show")
 def show_report(
     run_id: str = typer.Argument(..., help="Run ID to show"),
-    version: Optional[int] = typer.Option(
+    version: int | None = typer.Option(
         None,
         "--version",
         "-v",
@@ -364,7 +375,9 @@ def resume_run(
             if run.usage:
                 console.print(f"[dim]{run.usage.format_cost()}[/dim]")
         else:
-            console.print(f"\n[yellow]Status: {run.status}[/yellow]")
+            console.print(
+                f"\n[yellow]Status: {run.status.value}[/yellow] {run.error or ''}"
+            )
 
     except ValueError as e:
         console.print(f"[red]{e}[/red]")

@@ -1,17 +1,17 @@
 """Configuration management for the Deep Research client."""
 
-from pathlib import Path
 from functools import lru_cache
+from pathlib import Path
+from typing import Literal
 
 from pydantic import ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Deep Research uses Gemini 3 Pro internally
+# Agents and per-task cost estimates as of Oct 2026.
 # See: https://ai.google.dev/gemini-api/docs/deep-research
-# Pricing per 1M tokens (as of Dec 2024)
-PRICE_PER_M_INPUT = 2.0  # $2 per 1M input tokens
-PRICE_PER_M_OUTPUT = 12.0  # $12 per 1M output tokens
-# FIXME: Verify current rates and update if changed
+# Shutdown schedule: https://ai.google.dev/gemini-api/docs/deprecations
+DEEP_RESEARCH_AGENT = "deep-research-preview-04-2026"  # ~$1-3 per task
+DEEP_RESEARCH_MAX_AGENT = "deep-research-max-preview-04-2026"  # ~$3-7 per task
 
 
 class ConfigurationError(Exception):
@@ -23,10 +23,12 @@ class Settings(BaseSettings):
 
     gemini_api_key: str
     runs_dir: Path = Path("runs")
-    agent_name: str = "deep-research-pro-preview-12-2025"
+    agent_name: str = DEEP_RESEARCH_AGENT
     default_poll_interval: float = 10.0
-    default_poll_timeout: float = 1800.0  # 30 minutes
-    thinking_summaries: str = "auto"  # "auto", "on", "off"
+    default_poll_timeout: float = 3600.0  # agent's max research time is 60 minutes
+    thinking_summaries: Literal["auto", "none"] = "auto"
+    # Agent-generated charts; saved as report_v{N}_fig{M}.* beside the report
+    visualization: Literal["auto", "off"] = "auto"
 
     model_config = SettingsConfigDict(
         env_prefix="",
